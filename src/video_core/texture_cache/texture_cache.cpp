@@ -1726,6 +1726,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
             return {depth_image_id, -1, -1};
         }
 
+        const auto& cached_info = cache_image.info;
+        if (binding == BindingType::RenderTarget && image_info.size != cached_info.size &&
+            image_info.type == AmdGpu::ImageType::Color2D && image_info.type == cached_info.type &&
+            image_info.pixel_format == cached_info.pixel_format &&
+            image_info.num_samples == cached_info.num_samples &&
+            image_info.tile_mode == cached_info.tile_mode && image_info.alt_tile == cached_info.alt_tile &&
+            image_info.resources.levels == 1 && cached_info.resources.levels == 1 &&
+            image_info.resources.layers == 1 && cached_info.resources.layers == 1 &&
+            !image_info.props.is_block && !cached_info.props.is_block &&
+            !image_info.props.is_depth && !cached_info.props.is_depth) {
+            return {ExpandImage(image_info, cache_image_id), -1, -1};
+        }
+
         // Compressed view of uncompressed image with same block size.
         if (image_info.props.is_block && !cache_image.info.props.is_block) {
             return {ExpandImage(image_info, cache_image_id), -1, -1};

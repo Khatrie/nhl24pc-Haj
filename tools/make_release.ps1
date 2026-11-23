@@ -36,7 +36,6 @@ New-Item -ItemType Directory -Force $user, (Join-Path $user 'input_config'), (Jo
 $cfg = Get-Content (Join-Path $Build 'user\config.json') -Raw | ConvertFrom-Json
 foreach ($section in 'Launcher') { if ($cfg.PSObject.Properties[$section]) { $cfg.PSObject.Properties.Remove($section) } }
 if ($cfg.General) {
-    $cfg.General.install_dirs = @()
     foreach ($k in 'addon_install_dir', 'font_dir', 'home_dir', 'sys_modules_dir') { if ($null -ne $cfg.General.PSObject.Properties[$k]) { $cfg.General.$k = '' } }
 }
 if ($cfg.GPU -and $null -ne $cfg.GPU.PSObject.Properties['dump_shaders']) { $cfg.GPU.dump_shaders = $false }
