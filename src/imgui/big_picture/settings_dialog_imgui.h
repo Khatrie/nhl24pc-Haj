@@ -134,6 +134,11 @@ private:
     int windowHeightSetting;
     bool hdrAllowedSetting;
     bool fsrEnabledSetting;
+    bool dlssEnabledSetting;
+    bool ignoreFlipRateSetting;
+    bool stretchToFillSetting;
+    int dlssQualitySetting;
+    int dlssSharpnessSetting;
     bool rcasEnabledSetting;
     float rcasAttenuationSetting;
 

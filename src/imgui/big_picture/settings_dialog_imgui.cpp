@@ -62,6 +62,12 @@ void SettingsWindow::LoadSettings(std::string profile) {
     windowWidthSetting = EmulatorSettings.GetWindowWidth();
     hdrAllowedSetting = EmulatorSettings.IsHdrAllowed();
     fsrEnabledSetting = EmulatorSettings.IsFsrEnabled();
+    dlssEnabledSetting = EmulatorSettings.IsDlssEnabled();
+    dlssQualitySetting = EmulatorSettings.GetDlssQuality();
+    dlssSharpnessSetting = EmulatorSettings.GetDlssSharpness();
+    stretchToFillSetting = EmulatorSettings.IsStretchToFill();
+    ignoreFlipRateSetting = EmulatorSettings.IsFlipRateIgnored();
+    vblankFrequencySetting = EmulatorSettings.GetVblankFrequency();
     rcasEnabledSetting = EmulatorSettings.IsRcasEnabled();
     rcasAttenuationSetting = static_cast<float>(EmulatorSettings.GetRcasAttenuation() * 0.001f);
 
@@ -95,7 +101,6 @@ void SettingsWindow::LoadSettings(std::string profile) {
         pipelineCacheEnabledSetting = EmulatorSettings.IsPipelineCacheEnabled();
         pipelineCacheArchiveSetting = EmulatorSettings.IsPipelineCacheArchived();
         extraDmemSetting = EmulatorSettings.GetExtraDmemInMBytes();
-        vblankFrequencySetting = EmulatorSettings.GetVblankFrequency();
     }
 }
 
@@ -118,6 +123,12 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetWindowWidth(windowWidthSetting, isSpecific);
     EmulatorSettings.SetHdrAllowed(hdrAllowedSetting, isSpecific);
     EmulatorSettings.SetFsrEnabled(fsrEnabledSetting, isSpecific);
+    EmulatorSettings.SetDlssEnabled(dlssEnabledSetting, isSpecific);
+    EmulatorSettings.SetDlssQuality(dlssQualitySetting, isSpecific);
+    EmulatorSettings.SetDlssSharpness(dlssSharpnessSetting, isSpecific);
+    EmulatorSettings.SetStretchToFill(stretchToFillSetting, isSpecific);
+    EmulatorSettings.SetFlipRateIgnored(ignoreFlipRateSetting, isSpecific);
+    EmulatorSettings.SetVblankFrequency(vblankFrequencySetting, isSpecific);
     EmulatorSettings.SetRcasEnabled(rcasEnabledSetting, isSpecific);
     EmulatorSettings.SetRcasAttenuation(static_cast<int>(rcasAttenuationSetting * 1000),
                                         isSpecific);
@@ -152,7 +163,6 @@ void SettingsWindow::SaveSettings(std::string profile) {
         EmulatorSettings.SetPipelineCacheEnabled(pipelineCacheEnabledSetting, true);
         EmulatorSettings.SetPipelineCacheArchived(pipelineCacheArchiveSetting, true);
         EmulatorSettings.SetExtraDmemInMBytes(extraDmemSetting, true);
-        EmulatorSettings.SetVblankFrequency(vblankFrequencySetting, true);
     }
 
     isSpecific ? EmulatorSettings.Save(profile) : EmulatorSettings.Save();
@@ -233,19 +243,25 @@ SettingsWindow::SettingsWindow(bool gameRunning) : isGameRunning(gameRunning) {
 
 void SettingsWindow::Prepare() {
     uiScale = EmulatorSettings.GetBigPictureScale() / 1000.f;
+    if (isGameRunning) {
+        uiScale = std::min(uiScale, 0.85f);
+    }
 }
 
 void SettingsWindow::DeInit() {
     EmulatorSettings.Load();
-    EmulatorSettings.SetBigPictureScale(static_cast<int>(uiScale * 1000));
-    EmulatorSettings.Save();
+    if (!isGameRunning) {
+        EmulatorSettings.SetBigPictureScale(static_cast<int>(uiScale * 1000));
+        EmulatorSettings.Save();
+    }
 
     if (isGameRunning && !runningGameSerial.empty()) {
         EmulatorSettings.Load(runningGameSerial);
     }
 }
 void SettingsWindow::DrawSettings(bool* open, const std::function<void()>& applySettings) {
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f, 0.06f, 0.06f, 1.00f)); // black
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                          ImVec4(0.06f, 0.07f, 0.09f, isGameRunning ? 0.84f : 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.20f, 0.40f, 0.70f, 1.00f));   // blue
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
                           ImVec4(0.25f, 0.50f, 0.85f, 1.00f)); // lighter blue
@@ -254,13 +270,14 @@ void SettingsWindow::DrawSettings(bool* open, const std::function<void()>& apply
     ImGui::PushStyleColor(ImGuiCol_SliderGrab,
                           ImVec4(0.26f, 0.59f, 0.98f, 0.80f)); // another light blue
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, isGameRunning ? 10.0f : 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f * uiScale);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f * uiScale, 10.0f * uiScale));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f * uiScale, 10.0f * uiScale));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.5f * uiScale);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f * uiScale, 20.0f * uiScale));
+    const float padding = (isGameRunning ? 12.0f : 20.0f) * uiScale;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padding, padding));
     ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 20.0f * uiScale);
 
     SetupWindow();
@@ -275,12 +292,20 @@ void SettingsWindow::DrawSettings(bool* open, const std::function<void()>& apply
 
 void SettingsWindow::SetupWindow() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    if (isGameRunning) {
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f));
+        ImGui::SetNextWindowSize(ImVec2(std::min(560.0f, viewport->WorkSize.x - 32.0f),
+                                       std::min(420.0f, viewport->WorkSize.y - 32.0f)));
+    } else {
+        ImGui::SetNextWindowPos(viewport->WorkPos);
+        ImGui::SetNextWindowSize(viewport->WorkSize);
+    }
 
     ImGui::Begin("Settings", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoScrollWithMouse);
-    ImGui::DrawPrettyBackground();
+    if (!isGameRunning) {
+        ImGui::DrawPrettyBackground();
+    }
     ImGui::SetWindowFontScale(uiScale);
 
     if (ImGui::IsWindowAppearing()) {
@@ -290,7 +315,9 @@ void SettingsWindow::SetupWindow() {
     SettingsCategory firstCategory =
         isGameRunning ? SettingsCategory::General : SettingsCategory::Profiles;
     SettingsCategory lastCategory =
-        currentProfile != "Global" ? SettingsCategory::Experimental : SettingsCategory::Log;
+        isGameRunning ? SettingsCategory::Input
+                      : currentProfile != "Global" ? SettingsCategory::Experimental
+                                                    : SettingsCategory::Log;
 
     // Navigate categories with Tab / R1 / L1
     if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1) || ImGui::IsKeyPressed(ImGuiKey_Tab)) {
@@ -314,6 +341,9 @@ void SettingsWindow::DrawCategoryTabs() {
 
     float vertSize = (settingsIconSize * uiScale + ImGui::CalcTextSize("Profiles").y) +
                      ImGui::GetStyle().FramePadding.y * 4.f + 20.0 * uiScale;
+    if (isGameRunning) {
+        vertSize = ImGui::GetFrameHeightWithSpacing() + 2.0f * ImGui::GetStyle().WindowPadding.y;
+    }
     ImGuiChildFlags child_flags = ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened;
 
     ImGuiWindowFlags window_flags =
@@ -322,7 +352,8 @@ void SettingsWindow::DrawCategoryTabs() {
 
     ImGui::BeginChild("Categories", ImVec2(0, vertSize), child_flags, window_flags);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(30.0f * uiScale, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                        ImVec2((isGameRunning ? 8.0f : 30.0f) * uiScale, 0.0f));
 
     // Must add categories in enum order for L1/R1 to work correctly
     if (!isGameRunning) {
@@ -332,12 +363,13 @@ void SettingsWindow::DrawCategoryTabs() {
     AddCategory("General", generalTexture, SettingsCategory::General);
     AddCategory("Graphics", graphicsTexture, SettingsCategory::Graphics);
     AddCategory("Input", inputTexture, SettingsCategory::Input);
-    AddCategory("Trophy", trophyTexture, SettingsCategory::Trophy);
-    AddCategory("Game Folders", foldersTexture, SettingsCategory::Folders);
-    AddCategory("Log", logTexture, SettingsCategory::Log);
-
-    if (currentProfile != "Global") {
-        AddCategory("Experimental", experimentalTexture, SettingsCategory::Experimental);
+    if (!isGameRunning) {
+        AddCategory("Trophy", trophyTexture, SettingsCategory::Trophy);
+        AddCategory("Game Folders", foldersTexture, SettingsCategory::Folders);
+        AddCategory("Log", logTexture, SettingsCategory::Log);
+        if (currentProfile != "Global") {
+            AddCategory("Experimental", experimentalTexture, SettingsCategory::Experimental);
+        }
     }
 
     ImGui::PopStyleVar();
@@ -349,6 +381,19 @@ void SettingsWindow::AddCategory(std::string name,
                                  std::variant<SDL_Texture*, ImGui::RefCountedTexture> texture,
                                  SettingsCategory category) {
     ImGui::SameLine();
+    if (isGameRunning) {
+        const bool selected = currentCategory == category;
+        if (selected) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered]);
+        }
+        if (ImGui::Button(name.c_str())) {
+            currentCategory = category;
+        }
+        if (selected) {
+            ImGui::PopStyleColor();
+        }
+        return;
+    }
     ImGui::BeginGroup();
 
     // make button appear hovered as long as category is selected, otherwise dull its hovered color
@@ -389,9 +434,11 @@ void SettingsWindow::DrawMainContent(bool* open, const std::function<void()>& ap
         ? centeredText = "Manage shadPS4 Game Folders"
         : centeredText = "Selected Profile: " + currentProfile;
 
-    ImGui::Separator();
-    Overlay::TextCentered(centeredText.c_str());
-    ImGui::Separator();
+    if (!isGameRunning) {
+        ImGui::Separator();
+        Overlay::TextCentered(centeredText.c_str());
+        ImGui::Separator();
+    }
 
     if (currentCategory == SettingsCategory::Profiles) {
         DrawProfileSelector();
@@ -404,18 +451,19 @@ void SettingsWindow::DrawMainContent(bool* open, const std::function<void()>& ap
     ImGui::PopStyleColor();
 
     ImGui::Separator();
-    ImGui::SetNextItemWidth(300.0f * uiScale);
-    static float sliderScale2 = 1.0f;
-    if (ImGui::IsWindowAppearing()) {
-        sliderScale2 = uiScale;
-    }
+    if (!isGameRunning) {
+        ImGui::SetNextItemWidth(300.0f * uiScale);
+        static float sliderScale2 = 1.0f;
+        if (ImGui::IsWindowAppearing()) {
+            sliderScale2 = uiScale;
+        }
 
-    ImGui::SliderFloat("UI Scale", &sliderScale2, 0.25f, 3.0f);
-    // Only update when user is not interacting with slider
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        uiScale = sliderScale2;
+        ImGui::SliderFloat("UI Scale", &sliderScale2, 0.25f, 3.0f);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            uiScale = sliderScale2;
+        }
+        ImGui::SameLine();
     }
-    ImGui::SameLine();
 
     // Align buttons right
     float buttonsWidth = ImGui::CalcTextSize("Save").x + ImGui::CalcTextSize("Cancel").x +
@@ -702,27 +750,44 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
 
     if (category == SettingsCategory::General) {
         if (ImGui::BeginTable("SettingsTable", 2)) {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 500.0f * uiScale);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
+                                    isGameRunning ? ImGui::GetContentRegionAvail().x * 0.48f
+                                                  : 500.0f * uiScale);
             ImGui::TableSetupColumn("Value");
 
-            AddSettingCombo("Console Language", consoleLanguageSetting, languageOptions);
             AddSettingSliderInt("Volume", volumeSetting, 0, 500);
-            AddSettingCheckbox("Show Splash Screen When Launching Game", showSplashSetting);
-            AddSettingCombo("Audio Backend", audioBackendSetting, audioBackendOptions);
+            if (!isGameRunning) {
+                AddSettingCombo("Console Language", consoleLanguageSetting, languageOptions);
+                AddSettingCheckbox("Show Splash Screen When Launching Game", showSplashSetting);
+                AddSettingCombo("Audio Backend", audioBackendSetting, audioBackendOptions);
+            }
 
             ImGui::EndTable();
         }
     } else if (category == SettingsCategory::Graphics) {
         if (ImGui::BeginTable("SettingsTable", 2)) {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 500.0f * uiScale);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
+                                    isGameRunning ? ImGui::GetContentRegionAvail().x * 0.48f
+                                                  : 500.0f * uiScale);
             ImGui::TableSetupColumn("Value");
 
             AddSettingCombo("Display Mode", fullscreenModeSetting, fullscreenModeOptions);
             AddSettingCombo("Present Mode", presentModeSetting, presentModeOptions);
-            AddSettingSliderInt("Window Width", windowWidthSetting, 0, 8000);
-            AddSettingSliderInt("Window Height", windowHeightSetting, 0, 7000);
+            if (!isGameRunning) {
+                AddSettingSliderInt("Window Width", windowWidthSetting, 0, 8000);
+                AddSettingSliderInt("Window Height", windowHeightSetting, 0, 7000);
+            }
             AddSettingCheckbox("Enable HDR", hdrAllowedSetting);
             AddSettingCheckbox("Enable FSR", fsrEnabledSetting);
+            AddSettingCheckbox("Enable DLSS (RTX, restart)", dlssEnabledSetting);
+            if (dlssEnabledSetting) {
+                AddSettingCombo("DLSS quality (restart)", dlssQualitySetting,
+                                {"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"});
+                AddSettingSliderInt("DLSS sharpness (restart)", dlssSharpnessSetting, 0, 1000);
+            }
+            AddSettingCheckbox("Stretch to fill", stretchToFillSetting);
+            AddSettingCheckbox("Smooth menus & cutscenes", ignoreFlipRateSetting);
+            AddSettingSliderInt("Frame rate cap (restart)", vblankFrequencySetting, 30, 240);
 
             if (fsrEnabledSetting) {
                 AddSettingCheckbox("Enable RCAS", rcasEnabledSetting);
@@ -736,11 +801,15 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
         }
     } else if (category == SettingsCategory::Input) {
         if (ImGui::BeginTable("SettingsTable", 2)) {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 500.0f * uiScale);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
+                                    isGameRunning ? ImGui::GetContentRegionAvail().x * 0.48f
+                                                  : 500.0f * uiScale);
             ImGui::TableSetupColumn("Value");
 
-            AddSettingCheckbox("Enable Motion Controls", motionControlsSetting);
-            AddSettingCheckbox("Enable Background Controller Input", backgroundControllerSetting);
+            if (!isGameRunning) {
+                AddSettingCheckbox("Enable Motion Controls", motionControlsSetting);
+            }
+            AddSettingCheckbox("Background controller input", backgroundControllerSetting);
             AddSettingCombo("Hide Cursor", cursorStateSetting, hideCursorOptions);
 
             if (cursorStateSetting == 1) {
@@ -751,7 +820,9 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
         }
     } else if (category == SettingsCategory::Trophy) {
         if (ImGui::BeginTable("SettingsTable", 2)) {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 500.0f * uiScale);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
+                                    isGameRunning ? ImGui::GetContentRegionAvail().x * 0.48f
+                                                  : 500.0f * uiScale);
             ImGui::TableSetupColumn("Value");
 
             AddSettingCheckbox("Disable Trophy Notification", trophyPopupDisabledSetting);
@@ -766,7 +837,9 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
         }
     } else if (category == SettingsCategory::Log) {
         if (ImGui::BeginTable("SettingsTable", 2)) {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 500.0f * uiScale);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
+                                    isGameRunning ? ImGui::GetContentRegionAvail().x * 0.48f
+                                                  : 500.0f * uiScale);
             ImGui::TableSetupColumn("Value");
 
             AddSettingCheckbox("Enable Logging", logEnableSetting);
@@ -779,11 +852,12 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
         }
     } else if (category == SettingsCategory::Experimental) {
         if (ImGui::BeginTable("SettingsTable", 2)) {
-            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 500.0f * uiScale);
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed,
+                                    isGameRunning ? ImGui::GetContentRegionAvail().x * 0.48f
+                                                  : 500.0f * uiScale);
             ImGui::TableSetupColumn("Value");
 
             AddSettingSliderInt("Additional DMem Allocation", extraDmemSetting, 0, 20000);
-            AddSettingSliderInt("Vblank Frequency", vblankFrequencySetting, 30, 360);
             AddSettingCombo("Readbacks Mode", readbacksModeSetting, readbacksModeOptions);
             AddSettingCheckbox("Enable Readback Linear Images", readbackLinearImagesSetting);
             AddSettingCheckbox("Enable Direct Memory Access", directMemoryAccessSetting);

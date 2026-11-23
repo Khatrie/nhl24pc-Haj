@@ -112,22 +112,53 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 
 bool AccurateSleep(const std::chrono::nanoseconds duration, std::chrono::nanoseconds* remaining,
                    const bool interruptible) {
-    const auto begin_sleep = std::chrono::high_resolution_clock::now();
+    struct SleepTimer {
+        SleepTimer() {
+            handle = ::CreateWaitableTimerExW(nullptr, nullptr,
+                                              CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                              TIMER_MODIFY_STATE | SYNCHRONIZE);
+            if (!handle) {
+                handle = ::CreateWaitableTimerW(nullptr, FALSE, nullptr);
+            }
+        }
 
-    LARGE_INTEGER interval{
-        .QuadPart = -1 * (duration.count() / 100u),
+        ~SleepTimer() {
+            if (handle) {
+                ::CloseHandle(handle);
+            }
+        }
+
+        HANDLE handle{};
+        bool in_use{};
     };
-    HANDLE timer = ::CreateWaitableTimer(NULL, TRUE, NULL);
-    SetWaitableTimer(timer, &interval, 0, NULL, NULL, 0);
-    const auto ret = WaitForSingleObjectEx(timer, INFINITE, interruptible);
-    ::CloseHandle(timer);
+
+    const auto begin_sleep = std::chrono::steady_clock::now();
+    thread_local SleepTimer timer;
+    const auto wait = [&](SleepTimer& active_timer) {
+        LARGE_INTEGER interval{.QuadPart = -duration.count() / 100};
+        if (!active_timer.handle ||
+            !::SetWaitableTimer(active_timer.handle, &interval, 0, nullptr, nullptr, FALSE)) {
+            return false;
+        }
+        active_timer.in_use = true;
+        const auto result = ::WaitForSingleObjectEx(active_timer.handle, INFINITE, interruptible);
+        active_timer.in_use = false;
+        return result == WAIT_OBJECT_0;
+    };
+    bool completed;
+    if (timer.in_use) {
+        SleepTimer nested_timer;
+        completed = wait(nested_timer);
+    } else {
+        completed = wait(timer);
+    }
 
     if (remaining) {
-        const auto end_sleep = std::chrono::high_resolution_clock::now();
+        const auto end_sleep = std::chrono::steady_clock::now();
         const auto sleep_time = end_sleep - begin_sleep;
         *remaining = duration > sleep_time ? duration - sleep_time : std::chrono::nanoseconds(0);
     }
-    return ret == WAIT_OBJECT_0;
+    return completed;
 }
 
 #else

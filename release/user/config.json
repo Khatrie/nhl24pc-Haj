@@ -11,7 +11,7 @@
     "sdl_padSpk_output_device": "Default Device"
   },
   "Debug": {
-    "config_version": "24e5c779c8ada1fc5ae399eee1595565e52f7384",
+    "config_version": "464a6a1cf0402a88730c345efca5a07b40d5312c",
     "debug_dump": false,
     "shader_collect": false
   },
@@ -42,7 +42,8 @@
     "userfaultfd": false,
     "vblank_frequency": 60,
     "window_height": 1080,
-    "window_width": 1920
+    "window_width": 1920,
+    "ignore_flip_rate": true
   },
   "General": {
     "addon_install_dir": "",
@@ -90,7 +91,8 @@
     "builtin_sharpness": 799,
     "language": 1,
     "mip_lod_bias": 0,
-    "sharpen_mode": 0
+    "sharpen_mode": 0,
+    "show_fps": true
   },
   "Log": {
     "append": false,
@@ -117,7 +119,7 @@
   "Vulkan": {
     "gpu_id": -1,
     "pipeline_cache_archived": false,
-    "pipeline_cache_enabled": false,
+    "pipeline_cache_enabled": true,
     "renderdoc_enabled": false,
     "vkcrash_diagnostic_enabled": false,
     "vkguest_markers": false,

@@ -61,6 +61,7 @@ GraphicsPipeline::GraphicsPipeline(
     ASSERT_MSG(layout_result == vk::Result::eSuccess,
                "Failed to create graphics pipeline layout: {}", vk::to_string(layout_result));
     pipeline_layout = std::move(layout);
+    CreateDescriptorTemplate();
     SetObjectName(device, *pipeline_layout, "Graphics PipelineLayout {}", debug_str);
 
     if (!preloading) {
@@ -531,6 +532,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
     ASSERT_MSG(layout_result == vk::Result::eSuccess,
                "Failed to create graphics descriptor set layout: {}", vk::to_string(layout_result));
     desc_layout = std::move(layout);
+    BuildDescriptorTemplateEntries(bindings);
 }
 
 } // namespace Vulkan

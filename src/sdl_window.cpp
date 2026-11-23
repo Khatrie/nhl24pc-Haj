@@ -12,6 +12,7 @@
 #include <windows.h>
 #endif
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_properties.h>
@@ -33,6 +34,7 @@
 #include "core/libraries/pad/pad.h"
 #include "core/libraries/system/userservice.h"
 #include "core/user_settings.h"
+#include "imgui/big_picture/settings_dialog_layer.h"
 #include "imgui/friends_layer.h"
 #include "imgui/renderer/imgui_core.h"
 #include "input/controller.h"
@@ -221,6 +223,17 @@ void WindowSDL::WaitEvent() {
 
     if (!SDL_WaitEvent(&event)) {
         return;
+    }
+
+    if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+        (event.gbutton.button == SDL_GAMEPAD_BUTTON_START ||
+         event.gbutton.button == SDL_GAMEPAD_BUTTON_BACK)) {
+        auto* gamepad = SDL_GetGamepadFromID(event.gbutton.which);
+        if (gamepad && SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_START) &&
+            SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_BACK)) {
+            ImGuiEmuSettings::OpenInGameSettingsDialog();
+            return;
+        }
     }
 
     if (Libraries::Mouse::PushSDLEvent(event) || Libraries::Keyboard::PushSDLEvent(event)) {

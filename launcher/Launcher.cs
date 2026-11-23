@@ -16,7 +16,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
 using System.Management;
@@ -118,6 +117,16 @@ namespace NhlPort
             { "close", new[] { "Zavrieť", "Close" } },
             { "cancelled", new[] { "Inštalácia zrušená.", "Installation cancelled." } },
             { "tab_controls", new[] { "Ovládanie", "Controls" } },
+            { "tab_diagnostics", new[] { "Diagnostika", "Diagnostics" } },
+            { "diag_title", new[] { "Diagnostika hry", "Game diagnostics" } },
+            { "diag_description", new[] { "Spusti jednu reláciu s podrobným záznamom. Stlačením F1 v hre označíš problém a zaznamenáš nasledujúce snímky.", "Start one session with detailed logging. Press F1 in-game to mark an issue and trace the following frames." } },
+            { "diag_play", new[] { "Hrať s diagnostikou", "Play with diagnostics" } },
+            { "diag_logs", new[] { "Otvoriť záznamy", "Open logs" } },
+            { "diag_captures", new[] { "Otvoriť snímky", "Open captures" } },
+            { "diag_fps", new[] { "Zobraziť FPS v hre", "Show FPS overlay in-game" } },
+            { "diag_running", new[] { "Diagnostická relácia už beží.", "A diagnostic session is already running." } },
+            { "diag_open_failed", new[] { "Priečinok sa nepodarilo otvoriť:\n{0}", "Could not open the folder:\n{0}" } },
+            { "play_failed", new[] { "Hru sa nepodarilo spustiť:\n{0}", "Could not start the game:\n{0}" } },
             { "tab_display", new[] { "Zobrazenie", "Display" } },
             { "pad_hint", new[] { "Klikni na tlačidlo na obrázku (alebo riadok vpravo) a stlač klávesu, ktorú chceš priradiť. Esc = zrušiť. Gamepad (Xbox / DualShock) funguje automaticky, tlačidlá sú mapované 1:1.",
                                    "Click a button in the picture (or a row on the right) and press the key to assign. Esc = cancel. A gamepad (Xbox / DualShock) works automatically, buttons map 1:1." } },
@@ -163,8 +172,8 @@ namespace NhlPort
     // ------------------------------------------------------------------ small controls
     public class GlassPanel : Panel
     {
-        public Color Fill = Color.FromArgb(205, 10, 16, 26);
-        public Color Border = Color.FromArgb(120, 255, 255, 255);
+        public Color Fill = Theme.Surface;
+        public Color Border = Theme.Border;
         public int Radius = 10;
 
         public GlassPanel()
@@ -211,7 +220,6 @@ namespace NhlPort
         }
     }
 
-    // Section heading: orange accent bar + bold italic upper-case title + thin rule.
     public class SectionTitle : Control
     {
         public SectionTitle()
@@ -226,14 +234,8 @@ namespace NhlPort
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-            using (var accent = new SolidBrush(Theme.Orange))
-            {
-                var bar = new Point[] { new Point(6, 4), new Point(16, 4), new Point(10, 30), new Point(0, 30) };
-                e.Graphics.FillPolygon(accent, bar);
-            }
-            using (var font = new Font("Segoe UI", 19f, FontStyle.Bold | FontStyle.Italic))
-                TextRenderer.DrawText(e.Graphics, Text, font, new Point(26, 0), Color.White);
-            using (var pen = new Pen(Color.FromArgb(90, 255, 255, 255)))
+            TextRenderer.DrawText(e.Graphics, Text, Theme.Section, new Point(0, 1), Theme.FieldText);
+            using (var pen = new Pen(Theme.Border))
                 e.Graphics.DrawLine(pen, 0, Height - 4, Width, Height - 4);
         }
     }
@@ -255,7 +257,7 @@ namespace NhlPort
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             var box = new Rectangle(4, 6, 22, 22);
-            using (var brush = new SolidBrush(Ok ? Theme.Orange : Color.FromArgb(80, 90, 100)))
+            using (var brush = new SolidBrush(Ok ? Theme.Accent : Color.FromArgb(80, 90, 100)))
             using (var path = GlassPanel.Rounded(box, 4))
                 e.Graphics.FillPath(brush, path);
             if (Ok)
@@ -366,7 +368,7 @@ namespace NhlPort
             int x0 = Pad, x1 = Width - Pad;
             int xv = x0 + (int)((x1 - x0) * Fraction);
             var trackColor = Enabled ? Color.FromArgb(90, 255, 255, 255) : Color.FromArgb(50, 255, 255, 255);
-            var fillColor = Enabled ? Theme.Orange : Color.FromArgb(110, 110, 120);
+            var fillColor = Enabled ? Theme.Accent : Color.FromArgb(110, 110, 120);
             using (var brush = new SolidBrush(trackColor))
             using (var path = GlassPanel.Rounded(new Rectangle(x0, cy - 3, x1 - x0, 6), 3))
                 e.Graphics.FillPath(brush, path);
@@ -396,6 +398,7 @@ namespace NhlPort
         public FlatButton()
         {
             FlatStyle = FlatStyle.Flat;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
             FlatAppearance.BorderSize = 1;
             FlatAppearance.BorderColor = Color.FromArgb(120, 140, 160);
             FlatAppearance.MouseOverBackColor = Color.FromArgb(50, 62, 80);
@@ -410,59 +413,73 @@ namespace NhlPort
         public void SetAccent(bool on)
         {
             Accent = on;
-            BackColor = on ? Theme.Orange : Color.FromArgb(28, 36, 48);
-            FlatAppearance.BorderColor = on ? Theme.Orange : Color.FromArgb(120, 140, 160);
-            FlatAppearance.MouseOverBackColor = on ? Color.FromArgb(255, 150, 60) : Color.FromArgb(50, 62, 80);
-        }
-    }
-
-    // The PLAY button: btn.png with a hover / pressed brightness change.
-    public class ImageButton : Control
-    {
-        readonly Image image;
-        bool hover, down;
-
-        public ImageButton(Image img)
-        {
-            image = img;
-            SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer |
-                     ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
-            BackColor = Color.Transparent;
-            Cursor = Cursors.Hand;
-            MouseEnter += delegate { hover = true; Invalidate(); };
-            MouseLeave += delegate { hover = false; down = false; Invalidate(); };
-            MouseDown += delegate { down = true; Invalidate(); };
-            MouseUp += delegate { down = false; Invalidate(); };
+            BackColor = on ? Theme.Accent : Color.FromArgb(28, 36, 48);
+            FlatAppearance.BorderColor = on ? Theme.Accent : Theme.Border;
+            ForeColor = on ? Theme.Canvas : Theme.FieldText;
+            FlatAppearance.MouseOverBackColor = on ? Color.FromArgb(144, 218, 248) : Color.FromArgb(50, 62, 80);
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            if (image == null)
+            if (Enabled)
             {
-                using (var brush = new SolidBrush(Theme.Orange)) e.Graphics.FillRectangle(brush, ClientRectangle);
-                TextRenderer.DrawText(e.Graphics, Text, new Font("Segoe UI", 24f, FontStyle.Bold | FontStyle.Italic), ClientRectangle, Color.White,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                base.OnPaint(e);
                 return;
             }
-            float scale = down ? 0.97f : 1f;
-            int w = (int)(Width * scale), h = (int)(Height * scale);
-            var dest = new Rectangle((Width - w) / 2, (Height - h) / 2, w, h);
-            using (var attrs = new ImageAttributes())
+            e.Graphics.Clear(Theme.Field);
+            using (var border = new Pen(Theme.Border))
+                e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Theme.Muted,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+    }
+
+
+    public class SettingsNavigation : Panel
+    {
+        readonly FlowLayoutPanel navigation = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 46, WrapContents = false };
+        readonly Panel content = new Panel { Dock = DockStyle.Fill };
+        FlatButton selectedButton;
+
+        public SettingsNavigation()
+        {
+            BackColor = Theme.Surface;
+            Controls.Add(content);
+            Controls.Add(navigation);
+        }
+
+        public void AddPage(Panel page, Action onSelected = null)
+        {
+            var button = new FlatButton { Text = page.Text, Width = 132, Height = 34,
+                Margin = new Padding(0, 2, 8, 0) };
+            navigation.Controls.Add(button);
+            page.Dock = DockStyle.Fill;
+            page.AutoScroll = true;
+            page.Visible = false;
+            content.Controls.Add(page);
+            EventHandler select = delegate
             {
-                float b = hover ? 0.12f : 0f;
-                var matrix = new ColorMatrix(new float[][] {
-                    new float[] { 1, 0, 0, 0, 0 }, new float[] { 0, 1, 0, 0, 0 }, new float[] { 0, 0, 1, 0, 0 },
-                    new float[] { 0, 0, 0, 1, 0 }, new float[] { b, b, b, 0, 1 } });
-                attrs.SetColorMatrix(matrix);
-                e.Graphics.DrawImage(image, dest, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, attrs);
-            }
+                if (selectedButton == button) return;
+                foreach (Control other in content.Controls) other.Visible = other == page;
+                if (selectedButton != null) selectedButton.SetAccent(false);
+                selectedButton = button;
+                selectedButton.SetAccent(true);
+                if (onSelected != null) onSelected();
+            };
+            button.Click += select;
+            if (selectedButton == null) select(button, EventArgs.Empty);
         }
     }
 
     public static class Theme
     {
-        public static readonly Color Orange = Color.FromArgb(255, 122, 26);
+        public static readonly Color Canvas = Color.FromArgb(17, 22, 30);
+        public static readonly Color Surface = Color.FromArgb(26, 33, 44);
+        public static readonly Color Border = Color.FromArgb(54, 66, 83);
+        public static readonly Color Accent = Color.FromArgb(107, 199, 238);
+        public static readonly Color Muted = Color.FromArgb(172, 186, 202);
+        public static readonly Font Section = new Font("Segoe UI Semibold", 15f);
+        public static readonly Font Title = new Font("Segoe UI Semibold", 34f);
         public static readonly Color Field = Color.FromArgb(22, 29, 40);
         public static readonly Color FieldText = Color.White;
         public static readonly Font Body = new Font("Segoe UI", 10.5f);
@@ -489,12 +506,15 @@ namespace NhlPort
     public class PadAction
     {
         public string Id;      // name used by the input config (cross, l1, axis_left_x_minus ...)
-        public string Label;   // label
+        readonly string label;
+        readonly string englishLabel;
+        public string Label { get { return Loc.Lang == 1 ? englishLabel : label; } }
         public string Default; // default key name
         public int X, Y;       // marker position on the 1254x1254 pad picture
-        public PadAction(string id, string label, string def, int x, int y)
+        public PadAction(string id, string label, string def, int x, int y, string englishLabel = null)
         {
-            Id = id; Label = label; Default = def; X = x; Y = y;
+            Id = id; this.label = label; this.englishLabel = englishLabel ?? label;
+            Default = def; X = x; Y = y;
         }
     }
 
@@ -511,8 +531,6 @@ namespace NhlPort
         readonly string gamePathFile;
         readonly string gameExe;
 
-        Image background;
-        Image playImage;
         Image padImage;
 
         readonly List<PadAction> actions = new List<PadAction>();
@@ -530,7 +548,7 @@ namespace NhlPort
         CheckBox vsyncQuick;
         CheckBox redzoneQuick;
         CheckBox stretchQuick;
-        ImageButton playButton;
+        FlatButton playButton;
         FlatButton simpleBtn, advancedBtn;
         // pkg progress
         TransparentLabel progressTitle, progressFile, progressNumbers;
@@ -548,10 +566,13 @@ namespace NhlPort
         PadAction capturing;
         ComboBox resolutionBox;
         ComboBox fpsCapBox;
+        CheckBox ignoreFlipRateBox;
         CheckBox fullscreenBox;
         ComboBox fullscreenModeBox;
         CheckBox vsyncBox;
         CheckBox neoBox;
+        CheckBox fpsOverlayBox;
+        Process diagnosticGame;
         CheckBox stretchBox;
         CheckBox fsrBox;
         CheckBox rcasBox;
@@ -579,8 +600,6 @@ namespace NhlPort
             gamePathFile = Path.Combine(baseDir, "user", "game_path.txt");
             gameExe = Path.Combine(baseDir, "nhl24.exe");
 
-            background = LoadImage("background.png");
-            playImage = LoadImage("btn.png");
             padImage = LoadImage("ps4_pad.png");
 
             DefineActions();
@@ -603,7 +622,7 @@ namespace NhlPort
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(10, 16, 26);
+            BackColor = Theme.Canvas;
             KeyPreview = true;
             KeyDown += OnKeyDown;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
@@ -635,19 +654,6 @@ namespace NhlPort
             return null;
         }
 
-        protected override void OnPaintBackground(PaintEventArgs e)
-        {
-            if (background == null)
-            {
-                base.OnPaintBackground(e);
-                return;
-            }
-            // cover: keep the aspect ratio, crop the overflow
-            float scale = Math.Max((float)ClientSize.Width / background.Width, (float)ClientSize.Height / background.Height);
-            int w = (int)(background.Width * scale), h = (int)(background.Height * scale);
-            e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            e.Graphics.DrawImage(background, (ClientSize.Width - w) / 2, (ClientSize.Height - h) / 2, w, h);
-        }
 
         // ------------------------------------------------------------------ game folder / sfo
         string GameFolder
@@ -821,31 +827,31 @@ namespace NhlPort
         void DefineActions()
         {
             // Marker coordinates refer to the 1254x1254 ps4_pad.png.
-            actions.Add(new PadAction("cross", "Kríž (X)", "n", 1030, 551));
-            actions.Add(new PadAction("circle", "Kruh (O)", "b", 1120, 457));
-            actions.Add(new PadAction("square", "Štvorec", "v", 936, 457));
-            actions.Add(new PadAction("triangle", "Trojuholník", "c", 1030, 367));
+            actions.Add(new PadAction("cross", "Kríž (X)", "n", 1030, 551, "Cross (X)"));
+            actions.Add(new PadAction("circle", "Kruh (O)", "b", 1120, 457, "Circle (O)"));
+            actions.Add(new PadAction("square", "Štvorec", "v", 936, 457, "Square"));
+            actions.Add(new PadAction("triangle", "Trojuholník", "c", 1030, 367, "Triangle"));
             actions.Add(new PadAction("l1", "L1", "q", 237, 251));
             actions.Add(new PadAction("r1", "R1", "u", 1012, 251));
             actions.Add(new PadAction("l2", "L2", "e", 237, 205));
             actions.Add(new PadAction("r2", "R2", "o", 1012, 205));
-            actions.Add(new PadAction("l3", "L3 (stlačenie ľavej páčky)", "x", 421, 627));
-            actions.Add(new PadAction("r3", "R3 (stlačenie pravej páčky)", "m", 833, 627));
+            actions.Add(new PadAction("l3", "L3 (stlačenie ľavej páčky)", "x", 421, 627, "L3 (press left stick)"));
+            actions.Add(new PadAction("r3", "R3 (stlačenie pravej páčky)", "m", 833, 627, "R3 (press right stick)"));
             actions.Add(new PadAction("options", "OPTIONS", "enter", 882, 331));
             actions.Add(new PadAction("back", "SHARE", "backspace", 372, 331));
             actions.Add(new PadAction("touchpad_center", "Touchpad", "space", 627, 394));
-            actions.Add(new PadAction("pad_up", "D-pad hore", "up", 228, 331));
-            actions.Add(new PadAction("pad_down", "D-pad dole", "down", 228, 582));
-            actions.Add(new PadAction("pad_left", "D-pad vľavo", "left", 103, 457));
-            actions.Add(new PadAction("pad_right", "D-pad vpravo", "right", 354, 457));
-            actions.Add(new PadAction("axis_left_y_minus", "Ľavá páčka hore", "w", 421, 560));
-            actions.Add(new PadAction("axis_left_y_plus", "Ľavá páčka dole", "s", 421, 694));
-            actions.Add(new PadAction("axis_left_x_minus", "Ľavá páčka vľavo", "a", 354, 627));
-            actions.Add(new PadAction("axis_left_x_plus", "Ľavá páčka vpravo", "d", 488, 627));
-            actions.Add(new PadAction("axis_right_y_minus", "Pravá páčka hore", "i", 833, 560));
-            actions.Add(new PadAction("axis_right_y_plus", "Pravá páčka dole", "k", 833, 694));
-            actions.Add(new PadAction("axis_right_x_minus", "Pravá páčka vľavo", "j", 766, 627));
-            actions.Add(new PadAction("axis_right_x_plus", "Pravá páčka vpravo", "l", 900, 627));
+            actions.Add(new PadAction("pad_up", "D-pad hore", "up", 228, 331, "D-pad up"));
+            actions.Add(new PadAction("pad_down", "D-pad dole", "down", 228, 582, "D-pad down"));
+            actions.Add(new PadAction("pad_left", "D-pad vľavo", "left", 103, 457, "D-pad left"));
+            actions.Add(new PadAction("pad_right", "D-pad vpravo", "right", 354, 457, "D-pad right"));
+            actions.Add(new PadAction("axis_left_y_minus", "Ľavá páčka hore", "w", 421, 560, "Left stick up"));
+            actions.Add(new PadAction("axis_left_y_plus", "Ľavá páčka dole", "s", 421, 694, "Left stick down"));
+            actions.Add(new PadAction("axis_left_x_minus", "Ľavá páčka vľavo", "a", 354, 627, "Left stick left"));
+            actions.Add(new PadAction("axis_left_x_plus", "Ľavá páčka vpravo", "d", 488, 627, "Left stick right"));
+            actions.Add(new PadAction("axis_right_y_minus", "Pravá páčka hore", "i", 833, 560, "Right stick up"));
+            actions.Add(new PadAction("axis_right_y_plus", "Pravá páčka dole", "k", 833, 694, "Right stick down"));
+            actions.Add(new PadAction("axis_right_x_minus", "Pravá páčka vľavo", "j", 766, 627, "Right stick left"));
+            actions.Add(new PadAction("axis_right_x_plus", "Pravá páčka vpravo", "l", 900, 627, "Right stick right"));
         }
 
         void LoadBindings()
@@ -1007,7 +1013,9 @@ namespace NhlPort
             int fpsCap = 60;
             if (fpsCapBox == null || !int.TryParse(fpsCapBox.Text.Trim(), out fpsCap)) fpsCap = Convert.ToInt32(GpuValue("vblank_frequency", 60));
             Gpu["vblank_frequency"] = Math.Max(30, Math.Min(240, fpsCap));
+            if (ignoreFlipRateBox != null) Gpu["ignore_flip_rate"] = ignoreFlipRateBox.Checked;
             Launcher["language"] = Loc.Lang;
+            Launcher["show_fps"] = fpsOverlayBox != null && fpsOverlayBox.Checked;
             // Sharpening source: 0 = built-in RCAS pass (ReShade disabled for the game), 1 = ReShade
             // (the built-in sharpness is written as 0 so the two never stack; the slider value is kept).
             Launcher["sharpen_mode"] = sharpenModeBox.SelectedIndex;
@@ -1072,9 +1080,9 @@ namespace NhlPort
         {
             SuspendLayout();
 
-            // header texts under the logo (the logo is part of the background picture)
-            versionLabel = new TransparentLabel { Left = 46, Top = 172, Width = 400, Height = 22, Font = Theme.Body, Text = Loc.F("version_line", PortVersion) };
-            gameVersionLabel = new TransparentLabel { Left = 46, Top = 194, Width = 500, Height = 22, Font = Theme.Body };
+            Controls.Add(new TransparentLabel { Left = 44, Top = 46, Width = 580, Height = 70, Font = Theme.Title, Text = "NHL 24 PC" });
+            versionLabel = new TransparentLabel { Left = 46, Top = 122, Width = 400, Height = 22, Font = Theme.Body, ForeColor = Theme.Muted, Text = Loc.F("version_line", PortVersion) };
+            gameVersionLabel = new TransparentLabel { Left = 46, Top = 148, Width = 500, Height = 22, Font = Theme.Body, ForeColor = Theme.Muted };
             Controls.Add(versionLabel);
             Controls.Add(gameVersionLabel);
 
@@ -1315,14 +1323,15 @@ namespace NhlPort
             advancedView = new GlassPanel { Left = 30, Top = 236, Width = 1120, Height = 515, Visible = false };
             Controls.Add(advancedView);
 
-            var tabs = new TabControl { Left = 12, Top = 12, Width = 1096, Height = 491 };
-            var controlsTab = new TabPage(Loc.T("tab_controls")) { BackColor = Color.FromArgb(24, 31, 42) };
-            var displayTab = new TabPage(Loc.T("tab_display")) { BackColor = Color.FromArgb(24, 31, 42) };
-            tabs.TabPages.Add(controlsTab);
-            tabs.TabPages.Add(displayTab);
+            var tabs = new SettingsNavigation { Left = 12, Top = 12, Width = 1096, Height = 491 };
+            var controlsTab = new Panel { Text = Loc.T("tab_controls"), BackColor = Theme.Surface };
+            var displayTab = new Panel { Text = Loc.T("tab_display"), BackColor = Theme.Surface };
+            tabs.AddPage(controlsTab);
+            tabs.AddPage(displayTab);
+            tabs.AddPage(BuildDiagnosticsTab());
 
             // ---- controls tab
-            padBox = new PictureBox { Left = 10, Top = 10, Width = 440, Height = 440, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(24, 31, 42) };
+            padBox = new PictureBox { Left = 10, Top = 10, Width = 440, Height = 420, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Surface };
             if (padImage != null) padBox.Image = padImage;
             padBox.Paint += PadPaint;
             padBox.MouseClick += PadClick;
@@ -1331,17 +1340,20 @@ namespace NhlPort
             var hint = new Label { Left = 460, Top = 10, Width = 610, Height = 44, ForeColor = Color.FromArgb(200, 210, 225), BackColor = Color.Transparent, Font = Theme.Small, Text = Loc.T("pad_hint") };
             controlsTab.Controls.Add(hint);
 
-            bindList = new ListView { Left = 460, Top = 58, Width = 610, Height = 340, View = View.Details, FullRowSelect = true, HideSelection = false,
+            controlsTab.Controls.Add(new TransparentLabel { Left = 468, Top = 52, Width = 310, Height = 22, Text = Loc.T("col_action"), ForeColor = Theme.Muted, Font = Theme.Label });
+            controlsTab.Controls.Add(new TransparentLabel { Left = 798, Top = 52, Width = 240, Height = 22, Text = Loc.T("col_key"), ForeColor = Theme.Muted, Font = Theme.Label });
+            bindList = new ListView { Left = 460, Top = 76, Width = 610, Height = 291, View = View.Details,
+                HeaderStyle = ColumnHeaderStyle.None, FullRowSelect = true, HideSelection = false,
                 BackColor = Theme.Field, ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = Theme.Label };
             bindList.Columns.Add(Loc.T("col_action"), 330);
             bindList.Columns.Add(Loc.T("col_key"), 240);
             bindList.DoubleClick += delegate { if (bindList.SelectedItems.Count > 0) BeginCapture((PadAction)bindList.SelectedItems[0].Tag); };
             controlsTab.Controls.Add(bindList);
 
-            captureLabel = new Label { Left = 460, Top = 404, Width = 610, Height = 24, Font = new Font("Segoe UI", 10f, FontStyle.Bold), ForeColor = Theme.Orange, BackColor = Color.Transparent, Text = "" };
+            captureLabel = new Label { Left = 460, Top = 374, Width = 610, Height = 24, Font = new Font("Segoe UI", 10f, FontStyle.Bold), ForeColor = Theme.Accent, BackColor = Color.Transparent, Text = "" };
             controlsTab.Controls.Add(captureLabel);
 
-            var defaultsBtn = new FlatButton { Left = 460, Top = 428, Width = 180, Height = 30, Text = Loc.T("defaults") };
+            var defaultsBtn = new FlatButton { Left = 460, Top = 400, Width = 180, Height = 30, Text = Loc.T("defaults") };
             defaultsBtn.Click += delegate { foreach (var a in actions) bindings[a.Id] = a.Default; RefreshBindList(); padBox.Invalidate(); RefreshReadyCheck(); };
             controlsTab.Controls.Add(defaultsBtn);
 
@@ -1359,6 +1371,12 @@ namespace NhlPort
             fpsCapBox.Items.AddRange(new object[] { "60", "90", "120", "144" });
             fpsCapBox.Text = Convert.ToString(GpuValue("vblank_frequency", 60));
             displayTab.Controls.Add(fpsCapBox);
+            ignoreFlipRateBox = new CheckBox { Left = 875, Top = y - 2, Width = 200, Height = 26,
+                ForeColor = Theme.FieldText, BackColor = Color.Transparent, Font = Theme.Body,
+                Text = Loc.Lang == 1 ? "Smooth menus & cutscenes" : "Plynulé menu a prestrihy",
+                UseMnemonic = false,
+                Checked = ToBool(GpuValue("ignore_flip_rate", false), false) };
+            displayTab.Controls.Add(ignoreFlipRateBox);
             y += 40;
             fullscreenBox = new CheckBox { Left = 20, Top = y, Width = 300, ForeColor = Color.White, BackColor = Color.Transparent, Font = Theme.Body, Text = Loc.T("borderless").Split('(')[0].Trim(), Checked = displayModeBox.SelectedIndex != 0 };
             displayTab.Controls.Add(fullscreenBox);
@@ -1369,6 +1387,9 @@ namespace NhlPort
             displayTab.Controls.Add(fullscreenModeBox);
             var toolTip = new ToolTip { AutoPopDelay = 10000, InitialDelay = 400, ReshowDelay = 200, ShowAlways = true };
             toolTip.SetToolTip(fpsCapBox, Loc.T("fps_cap_desc"));
+            toolTip.SetToolTip(ignoreFlipRateBox, Loc.Lang == 1
+                ? "Lets the game present on every refresh, up to the configured frame rate cap."
+                : "Umožní zobraziť snímku pri každom obnovení až do nastaveného limitu FPS.");
 
             bool neoChecked = ToBool(GeneralValue("neo_mode", true), true);
             neoBox = new CheckBox { Left = 550, Top = y, Width = 520, ForeColor = Color.White, BackColor = Color.Transparent, Font = Theme.Body, Text = Loc.T("neo_mode_label"), Checked = neoChecked };
@@ -1485,8 +1506,7 @@ namespace NhlPort
             dlssGroup.Controls.Add(dlssGpuLbl);
             displayTab.Controls.Add(dlssGroup);
 
-            y += 255;
-            displayTab.Controls.Add(new Label { Left = 20, Top = y, Width = 1050, Height = 75, ForeColor = Color.FromArgb(200, 210, 225), BackColor = Color.Transparent, Font = Theme.Small, Text = Loc.T("display_note") });
+            toolTip.SetToolTip(resolutionBox, Loc.T("display_note"));
 
             // advanced -> quick mirroring
             resolutionBox.TextChanged += delegate { if (outputBox.Text != resolutionBox.Text) outputBox.Text = resolutionBox.Text; };
@@ -1566,7 +1586,139 @@ namespace NhlPort
             vsyncBox.CheckedChanged += delegate { if (vsyncQuick.Checked != vsyncBox.Checked) vsyncQuick.Checked = vsyncBox.Checked; };
             stretchBox.CheckedChanged += delegate { if (stretchQuick != null && stretchQuick.Checked != stretchBox.Checked) stretchQuick.Checked = stretchBox.Checked; RefreshSummary(); };
 
+            AddPerformanceTab(tabs);
             advancedView.Controls.Add(tabs);
+        }
+
+        string previousPresetResolution, previousPresetFps;
+        int previousPresetUpscaler;
+        bool previousPresetNeo, previousPresetHadReadbacks;
+        object previousPresetReadbacks;
+
+        void AddPerformanceTab(SettingsNavigation tabs)
+        {
+            bool english = Loc.Lang == 1;
+            var page = new Panel { Text = english ? "Performance" : "Výkon", BackColor = Theme.Surface };
+
+            var preset = new ComboBox { Left = 20, Top = 41, Width = 235, DropDownStyle = ComboBoxStyle.DropDownList };
+            Theme.Style(preset);
+            preset.Items.AddRange(english
+                ? new object[] { "Compatibility", "Balanced", "Quality" }
+                : new object[] { "Kompatibilita", "Vyvážený", "Kvalita" });
+            var preview = new Label { Left = 20, Top = 84, Width = 940, Height = 60, ForeColor = Color.White, Font = Theme.Body };
+            preset.SelectedIndexChanged += delegate
+            {
+                preview.Text = (english ? new[] {
+                    "1280 × 720 output · 60 FPS · Upscaling off · Base PS4 mode",
+                    "1920 × 1080 output · 60 FPS · Upscaling off · Base PS4 mode",
+                    "2560 × 1440 output · 60 FPS · FSR · PS4 Pro mode"
+                } : new[] {
+                    "Výstup 1280 × 720 · 60 FPS · Upscaling vypnutý · Základný režim PS4",
+                    "Výstup 1920 × 1080 · 60 FPS · Upscaling vypnutý · Základný režim PS4",
+                    "Výstup 2560 × 1440 · 60 FPS · FSR · Režim PS4 Pro"
+                })[preset.SelectedIndex] + "\n" + (english
+                    ? "GPU readbacks use Relaxed. Apply previews these settings. Save or Play keeps them."
+                    : "GPU readbacks používa režim Relaxed. Použiť zobrazí nastavenia. Uložiť alebo Hrať ich zachová.");
+            };
+            preset.SelectedIndex = 0;
+
+            var apply = new FlatButton { Left = 272, Top = 38, Width = 110, Height = 30, Text = english ? "Apply preset" : "Použiť profil" };
+            var restore = new FlatButton { Left = 396, Top = 38, Width = 165, Height = 30,
+                Text = english ? "Restore previous" : "Obnoviť predošlé", Enabled = previousPresetResolution != null };
+            apply.Click += delegate
+            {
+                previousPresetResolution = resolutionBox.Text;
+                previousPresetFps = fpsCapBox.Text;
+                previousPresetUpscaler = upscalerBox.SelectedIndex;
+                previousPresetNeo = neoBox.Checked;
+                previousPresetHadReadbacks = Gpu.TryGetValue("readbacks_mode", out previousPresetReadbacks);
+                resolutionBox.Text = new[] { "1280 x 720", "1920 x 1080", "2560 x 1440" }[preset.SelectedIndex];
+                fpsCapBox.Text = "60";
+                upscalerBox.SelectedIndex = preset.SelectedIndex == 2 ? 1 : 0;
+                neoBox.Checked = preset.SelectedIndex == 2;
+                Gpu["readbacks_mode"] = 1;
+                restore.Enabled = true;
+                RefreshSummary();
+            };
+            restore.Click += delegate
+            {
+                resolutionBox.Text = previousPresetResolution;
+                fpsCapBox.Text = previousPresetFps;
+                upscalerBox.SelectedIndex = previousPresetUpscaler;
+                neoBox.Checked = previousPresetNeo;
+                if (previousPresetHadReadbacks) Gpu["readbacks_mode"] = previousPresetReadbacks;
+                else Gpu.Remove("readbacks_mode");
+                previousPresetResolution = null;
+                restore.Enabled = false;
+                RefreshSummary();
+            };
+            page.Controls.AddRange(new Control[] {
+                new Label { Left = 20, Top = 15, Width = 300, Text = english ? "Graphics presets" : "Grafické profily", ForeColor = Color.White, Font = Theme.Body },
+                preset, apply, restore, preview
+            });
+
+            object section;
+            var vulkan = config.TryGetValue("Vulkan", out section) ? section as Dictionary<string, object> : null;
+            object enabled;
+            var cacheToggle = new CheckBox { Left = 20, Top = 185, Width = 550, Height = 30, ForeColor = Color.White, Font = Theme.Body,
+                Text = english ? "Keep the Vulkan driver pipeline cache between sessions" : "Zachovať cache Vulkan pipeline medzi spusteniami",
+                Checked = vulkan != null && vulkan.TryGetValue("pipeline_cache_enabled", out enabled) && ToBool(enabled, false) };
+            cacheToggle.CheckedChanged += delegate
+            {
+                if (vulkan == null) config["Vulkan"] = vulkan = new Dictionary<string, object>();
+                vulkan["pipeline_cache_enabled"] = cacheToggle.Checked;
+            };
+            var cacheDir = Path.Combine(baseDir, "user", "cache");
+            var cacheStatus = new Label { Left = 20, Top = 223, Width = 940, Height = 46, ForeColor = Color.White, Font = Theme.Small };
+            Func<long, string> formatSize = bytes => bytes < 1024
+                ? string.Format("{0:N0} B", bytes)
+                : bytes < 1048576 ? string.Format("{0:N1} KiB", bytes / 1024.0)
+                                  : string.Format("{0:N1} MiB", bytes / 1048576.0);
+            Action refreshCacheStatus = delegate
+            {
+                var serial = InstalledTitleId(GameFolder);
+                if (!IsSupportedTitleId(serial))
+                {
+                    cacheStatus.Text = english ? "No supported game installation selected." : "Nie je vybraná podporovaná inštalácia hry.";
+                    return;
+                }
+                try
+                {
+                    var file = new FileInfo(Path.Combine(cacheDir, serial + ".vkcache"));
+                    var archive = new FileInfo(Path.Combine(cacheDir, serial + ".zip"));
+                    var directory = new DirectoryInfo(Path.Combine(cacheDir, serial));
+                    long shaderBytes = archive.Exists ? archive.Length : 0;
+                    if (directory.Exists)
+                    {
+                        foreach (var entry in directory.EnumerateFiles())
+                            shaderBytes += entry.Length;
+                    }
+                    cacheStatus.Text = string.Format(
+                        english ? "{0} · Vulkan driver cache: {1}\r\nShader and pipeline data: {2}"
+                                : "{0} · Cache ovládača Vulkan: {1}\r\nDáta shaderov a pipeline: {2}",
+                        serial, file.Exists ? formatSize(file.Length) : "—", formatSize(shaderBytes));
+                }
+                catch (IOException) { cacheStatus.Text = english ? "Cache is temporarily unavailable." : "Cache je dočasne nedostupná."; }
+                catch (UnauthorizedAccessException) { cacheStatus.Text = english ? "Cannot read the cache folder." : "Priečinok cache sa nedá prečítať."; }
+            };
+            var openCache = new FlatButton { Left = 20, Top = 276, Width = 190, Height = 31, Text = english ? "Open cache folder" : "Otvoriť priečinok cache" };
+            openCache.Click += delegate
+            {
+                try
+                {
+                    Directory.CreateDirectory(cacheDir);
+                    Process.Start(cacheDir);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            };
+            tabs.AddPage(page, refreshCacheStatus);
+            page.Controls.AddRange(new Control[] {
+                new Label { Left = 20, Top = 153, Width = 300, Text = english ? "Pipeline cache" : "Cache pipeline", ForeColor = Color.White, Font = Theme.Body },
+                cacheToggle, cacheStatus, openCache
+            });
         }
 
         void BuildBottomBar()
@@ -1580,7 +1732,8 @@ namespace NhlPort
             var saveBtn = new FlatButton { Left = 720, Top = 40, Width = 110, Height = 36, Text = Loc.T("save") };
             saveBtn.Click += delegate { if (SaveAll()) statusLabel.Text = Loc.T("saved") + ": " + configPath; };
             bar.Controls.Add(saveBtn);
-            playButton = new ImageButton(playImage) { Left = 850, Top = 8, Width = 310, Height = 100, Text = Loc.T("play") };
+            playButton = new FlatButton { Left = 850, Top = 34, Width = 280, Height = 48, Font = Theme.Section, Text = Loc.T("play") };
+            playButton.SetAccent(true);
             playButton.Click += delegate { if (SaveAll()) RunGame(); };
             bar.Controls.Add(playButton);
             statusLabel.Text = File.Exists(gameExe) ? "nhl24.exe: " + gameExe : Loc.F("no_exe", gameExe);
@@ -1588,7 +1741,7 @@ namespace NhlPort
 
         void BuildProgressPanel()
         {
-            progressPanel = new GlassPanel { Left = 290, Top = 330, Width = 600, Height = 230, Visible = false, Fill = Color.FromArgb(240, 8, 12, 20), Border = Theme.Orange };
+            progressPanel = new GlassPanel { Left = 290, Top = 330, Width = 600, Height = 230, Visible = false, Fill = Color.FromArgb(240, 8, 12, 20), Border = Theme.Accent };
             Controls.Add(progressPanel);
             progressPanel.BringToFront();
             progressPanel.Controls.Add(new SectionTitle { Left = 16, Top = 14, Width = 560, Text = Loc.T("pkg_title") });
@@ -1890,19 +2043,21 @@ namespace NhlPort
                 e.Graphics.DrawString("ps4_pad.png ?", Font, Brushes.Red, 10, 10);
                 return;
             }
-            using (var font = new Font("Segoe UI", 8, FontStyle.Bold))
+            using (var font = new Font("Segoe UI Semibold", 8))
+            using (var marker = new SolidBrush(Theme.Accent))
+            using (var badge = new SolidBrush(Theme.Canvas))
             foreach (var a in actions)
             {
                 float bx, by;
                 if (!ImageToBox(a.X, a.Y, out bx, out by)) continue;
                 bool active = capturing == a;
-                var brush = active ? Brushes.Orange : Brushes.LightGreen;
+                var brush = active ? Brushes.White : marker;
                 e.Graphics.FillEllipse(brush, bx - 6, by - 6, 12, 12);
                 e.Graphics.DrawEllipse(Pens.Black, bx - 6, by - 6, 12, 12);
                 var text = bindings[a.Id];
                 var size = e.Graphics.MeasureString(text, font);
-                e.Graphics.FillRectangle(Brushes.White, bx + 7, by - size.Height / 2, size.Width + 2, size.Height);
-                e.Graphics.DrawString(text, font, Brushes.Black, bx + 8, by - size.Height / 2);
+                e.Graphics.FillRectangle(badge, bx + 7, by - size.Height / 2, size.Width + 2, size.Height);
+                e.Graphics.DrawString(text, font, Brushes.White, bx + 8, by - size.Height / 2);
             }
         }
 
@@ -2013,14 +2168,71 @@ namespace NhlPort
             try { SaveBindings(); SaveConfig(); } catch (Exception) { }
         }
 
-        void RunGame()
+        Panel BuildDiagnosticsTab()
         {
+            var page = new Panel { Text = Loc.T("tab_diagnostics"), BackColor = Theme.Surface };
+            var title = new SectionTitle { Left = 24, Top = 20, Width = 760, Text = Loc.T("diag_title") };
+            var description = new Label { Left = 24, Top = 74, Width = 760, Height = 36,
+                Font = Theme.Body, ForeColor = Theme.Muted, Text = Loc.T("diag_description") };
+            fpsOverlayBox = new CheckBox { Left = 24, Top = 112, Width = 400, Height = 28,
+                Font = Theme.Body, ForeColor = Color.White, Text = Loc.T("diag_fps"),
+                Checked = ToBool(LauncherValue("show_fps", false), false) };
+            var play = new FlatButton { Left = 24, Top = 160, Width = 220, Height = 36, Text = Loc.T("diag_play") };
+            play.SetAccent(true);
+            play.Click += delegate { if (SaveAll()) RunGame(true); };
+            var logs = new FlatButton { Left = 260, Top = 160, Width = 160, Height = 36, Text = Loc.T("diag_logs") };
+            logs.Click += delegate { OpenDiagnosticFolder("log"); };
+            var captures = new FlatButton { Left = 436, Top = 160, Width = 160, Height = 36, Text = Loc.T("diag_captures") };
+            captures.Click += delegate { OpenDiagnosticFolder("captures"); };
+            page.Controls.AddRange(new Control[] { title, description, fpsOverlayBox, play, logs, captures });
+            return page;
+        }
+
+        void OpenDiagnosticFolder(string name)
+        {
+            var folder = Path.Combine(baseDir, "user", name);
+            try
+            {
+                Directory.CreateDirectory(folder);
+                Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, Loc.F("diag_open_failed", ex.Message), Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        void RunGame(bool diagnostics = false)
+        {
+            if (diagnosticGame != null)
+            {
+                if (!diagnosticGame.HasExited)
+                {
+                    MessageBox.Show(this, Loc.T("diag_running"), Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                diagnosticGame.Dispose();
+                diagnosticGame = null;
+            }
             if (!File.Exists(gameExe))
             {
                 MessageBox.Show(this, Loc.F("no_exe", gameExe), "NHL24 PC", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
-            var psi = new ProcessStartInfo(gameExe) { WorkingDirectory = baseDir, UseShellExecute = false };
+            var eboot = Path.GetFullPath(Path.Combine(GameFolder, "eboot.bin"));
+            if (!File.Exists(eboot))
+            {
+                MessageBox.Show(this, Loc.T("game_missing"), Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            var psi = new ProcessStartInfo(gameExe) { WorkingDirectory = baseDir, UseShellExecute = false,
+                Arguments = "-g \"" + eboot + "\"" };
+            if (File.Exists(Path.Combine(baseDir, "user", "patches", "nhl24.xml")))
+                psi.Arguments += " -p nhl24.xml";
+            if (diagnostics)
+                psi.EnvironmentVariables["NHLPORT_DIAG"] = "1";
+            if (fpsOverlayBox != null && fpsOverlayBox.Checked)
+                psi.Arguments += " --show-fps";
             // Built-in sharpening: switch off the ReShade Vulkan layer for the game only (the layer's own
             // disable_environment switch), so ReShade and the built-in pass never run together.
             if (sharpenModeBox == null || sharpenModeBox.SelectedIndex == 0)
@@ -2033,8 +2245,21 @@ namespace NhlPort
             else if (runLodIdx == 2) runLodVal = -0.25f;
             else runLodVal = 0.0f;
             psi.EnvironmentVariables["NHLPORT_LOD_BIAS"] = runLodVal.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
-            Process.Start(psi);
-            Close();
+            try
+            {
+                var process = Process.Start(psi);
+                if (diagnostics)
+                    diagnosticGame = process;
+                else
+                {
+                    process.Dispose();
+                    Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, Loc.F("play_failed", ex.Message), Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         [STAThread]

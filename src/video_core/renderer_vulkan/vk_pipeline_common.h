@@ -62,6 +62,8 @@ public:
 
 protected:
     [[nodiscard]] std::string GetDebugString() const;
+    void BuildDescriptorTemplateEntries(std::span<const vk::DescriptorSetLayoutBinding> bindings);
+    void CreateDescriptorTemplate();
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -73,6 +75,10 @@ protected:
     std::array<const Shader::Info*, Shader::MaxStageTypes> stages{};
     bool uses_push_descriptors{};
     bool is_compute;
+
+private:
+    boost::container::small_vector<vk::DescriptorUpdateTemplateEntry, 32> descriptor_entries;
+    vk::UniqueDescriptorUpdateTemplate descriptor_template;
 };
 
 } // namespace Vulkan

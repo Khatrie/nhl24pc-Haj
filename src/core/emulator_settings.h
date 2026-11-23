@@ -423,6 +423,7 @@ struct GPUSettings {
     Setting<bool> dump_shaders{false};
     Setting<bool> patch_shaders{false};
     Setting<u32> vblank_frequency{60};
+    Setting<bool> ignore_flip_rate{false};
     Setting<bool> full_screen{false};
     Setting<std::string> full_screen_mode{"Windowed"};
     Setting<std::string> present_mode{"Mailbox"};
@@ -462,6 +463,7 @@ struct GPUSettings {
             make_override<GPUSettings>("direct_memory_access_enabled",
                                        &GPUSettings::direct_memory_access_enabled),
             make_override<GPUSettings>("vblank_frequency", &GPUSettings::vblank_frequency),
+            make_override<GPUSettings>("ignore_flip_rate", &GPUSettings::ignore_flip_rate),
             make_override<GPUSettings>("userfaultfd", &GPUSettings::userfaultfd),
             make_override<GPUSettings>("inline_fetch_shader", &GPUSettings::inline_fetch_shader),
         };
@@ -471,7 +473,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GPUSettings, window_width, window_height, int
                                    internal_screen_height, null_gpu, copy_gpu_buffers,
                                    readbacks_mode, readback_linear_images_enabled,
                                    direct_memory_access_enabled, dump_shaders, patch_shaders,
-                                   vblank_frequency, full_screen, full_screen_mode, present_mode,
+                                   vblank_frequency, ignore_flip_rate, full_screen, full_screen_mode, present_mode,
                                    hdr_allowed, fsr_enabled, dlss_enabled, dlss_quality, dlss_sharpness, stretch_to_fill, rcas_enabled, rcas_attenuation,
                                    userfaultfd, inline_fetch_shader)
 
@@ -746,6 +748,7 @@ public:
     SETTING_FORWARD(m_gpu, InternalScreenWidth, internal_screen_width)
     SETTING_FORWARD_BOOL(m_gpu, HdrAllowed, hdr_allowed)
     SETTING_FORWARD_BOOL(m_gpu, FsrEnabled, fsr_enabled)
+    SETTING_FORWARD_BOOL(m_gpu, FlipRateIgnored, ignore_flip_rate)
     SETTING_FORWARD_BOOL(m_gpu, DlssEnabled, dlss_enabled)
     SETTING_FORWARD(m_gpu, DlssQuality, dlss_quality)
     SETTING_FORWARD(m_gpu, DlssSharpness, dlss_sharpness)
