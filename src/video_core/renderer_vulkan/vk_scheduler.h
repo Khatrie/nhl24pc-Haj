@@ -409,6 +409,9 @@ public:
         return sessions.back().primary;
     }
 
+    void BindPipeline(vk::PipelineBindPoint bind_point, vk::Pipeline pipeline);
+    void InvalidateBoundPipelines();
+
     /// Returns the current command buffer tick.
     [[nodiscard]] u64 CurrentTick() const noexcept {
         return work_semaphore.CurrentTick();
@@ -471,6 +474,8 @@ private:
     struct Session {
         vk::CommandBuffer upload{};
         vk::CommandBuffer primary{};
+        vk::Pipeline graphics_pipeline{};
+        vk::Pipeline compute_pipeline{};
     };
     std::vector<Session> sessions;
     std::condition_variable_any event_cv;

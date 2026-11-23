@@ -1592,7 +1592,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
     const bool bpp_match = requested_info.num_bits == cache_image.info.num_bits;
 
     // If an image in the cache has less slices we need to expand it
-    bool recreate = cache_image.info.resources < requested_info.resources;
+    bool recreate = !cache_image.info.resources.Contains(requested_info.resources);
 
     switch (binding) {
     case BindingType::Texture:
@@ -1784,7 +1784,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
         // Size and resources are greater, expand the image.
         if (image_info.type == cache_image.info.type &&
-            image_info.resources > cache_image.info.resources) {
+            !cache_image.info.resources.Contains(image_info.resources)) {
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -1900,7 +1900,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                       (image_info.pitch == cache_image.info.pitch),
                       (image_info.props.is_pow2 == cache_image.info.props.is_pow2),
                       (image_info.alt_tile == cache_image.info.alt_tile),
-                      (cache_image.info.resources <= image_info.resources),
+                      image_info.resources.Contains(cache_image.info.resources),
                       cache_image.info.resources.levels, image_info.resources.levels,
                       (cache_image.info.guest_size <= image_info.guest_size), expected_size,
 
@@ -1959,31 +1959,26 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         // Left overlap, the image from cache is a possible subresource of the image requested
         if (auto mip = cache_image.info.MipOf(image_info); mip >= 0) {
             if (auto slice = cache_image.info.SliceOf(image_info, mip); slice >= 0) {
-                // We have a larger image created and a separate one, representing a subres of it
-                // bound as render target. In this case we need to rebind render target.
-                if (cache_image.binding.is_target) {
+                const bool is_target = cache_image.binding.is_target;
+                const bool copy_gpu_data = cache_image.SafeToDownload();
+                if (is_target) {
                     cache_image.binding.needs_rebind = 1u;
-                    if (merged_image_id) {
-                        auto& merged_image = GetImage(merged_image_id);
-                        merged_image.binding.is_target = 1u;
-                        // nhlport: the subresource may already hold rendered data (an earlier
-                        // draw into this mip); on real hardware it is the same memory, so carry
-                        // it over instead of leaving the merged mip with stale guest bytes.
-                        if (True(cache_image.flags & ImageFlagBits::GpuModified)) {
-                            VideoCore::Perf::tc_target_copy.fetch_add(1, std::memory_order_relaxed);
-                            runtime.CopyMip(&cache_image, &merged_image, mip, slice);
-                        }
-                    }
-
-                    VideoCore::Perf::NoteFree(VideoCore::Perf::FreeLeftTarget);
-                    FreeImage(cache_image_id);
-                    return {merged_image_id, -1, -1};
                 }
 
-                // We need to have a larger, already allocated image to copy this one into
+                if (!merged_image_id && copy_gpu_data) {
+                    merged_image_id =
+                        slot_images.Insert(instance, runtime, slot_image_views, image_info);
+                    RegisterImage(merged_image_id);
+                    RefreshImage(slot_images[merged_image_id]);
+                    TrackImage(merged_image_id);
+                }
+
                 if (merged_image_id) {
                     auto& merged_image = slot_images[merged_image_id];
-                    {
+                    if (is_target) {
+                        merged_image.binding.is_target = 1u;
+                    }
+                    if (copy_gpu_data) {
                         static std::atomic<u64> n{0};
                         const u64 k = n.fetch_add(1, std::memory_order_relaxed);
                         if (k < 60 || k % 2000 == 0) {
@@ -1995,12 +1990,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                                      merged_image.info.size.width, merged_image.info.size.height,
                                      vk::to_string(merged_image.info.pixel_format), merged_image.info.guest_address);
                         }
+                        auto& copy_count = is_target ? VideoCore::Perf::tc_target_copy
+                                                     : VideoCore::Perf::tc_left_copy;
+                        copy_count.fetch_add(1, std::memory_order_relaxed);
+                        runtime.CopyMip(&cache_image, &merged_image, mip, slice);
+                        merged_image.flags |= ImageFlagBits::GpuModified;
                     }
-                    VideoCore::Perf::tc_left_copy.fetch_add(1, std::memory_order_relaxed);
-                    runtime.CopyMip(&cache_image, &merged_image, mip, slice);
-                    VideoCore::Perf::NoteFree(VideoCore::Perf::FreeLeftCopy);
+                }
+                if (merged_image_id || is_target) {
+                    VideoCore::Perf::NoteFree(is_target ? VideoCore::Perf::FreeLeftTarget
+                                                       : VideoCore::Perf::FreeLeftCopy);
                     FreeImage(cache_image_id);
                 }
+                return {merged_image_id, -1, -1};
             }
         }
     }
@@ -2063,10 +2065,14 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
 
     auto& src_image = slot_images[image_id];
     auto& new_image = slot_images[new_image_id];
-    new_image.content_hash = src_image.content_hash ? src_image.content_hash : 1ULL;
-
+    const bool copy_gpu_data = src_image.SafeToDownload();
     RefreshImage(new_image);
-    runtime.CopyImage(&src_image, &new_image);
+    if (copy_gpu_data) {
+        new_image.content_hash = src_image.content_hash ? src_image.content_hash : 1ULL;
+        runtime.CopyImage(&src_image, &new_image);
+        new_image.flags &= ~ImageFlagBits::Dirty;
+        new_image.flags |= ImageFlagBits::GpuModified;
+    }
 
     if (src_image.binding.is_bound || src_image.binding.is_target) {
         src_image.binding.needs_rebind = 1u;
@@ -2153,7 +2159,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (exact_fmt && info.pixel_format != image_resolved.info.pixel_format) {
             // Cannot reuse this image as we need the exact requested format.
             image_id = {};
-        } else if (image_resolved.info.resources < info.resources) {
+        } else if (!image_resolved.info.resources.Contains(info.resources)) {
             // The image was clearly picked up wrong.
             VideoCore::Perf::NoteFree(VideoCore::Perf::FreeResolveFailed);
             FreeImage(image_id);

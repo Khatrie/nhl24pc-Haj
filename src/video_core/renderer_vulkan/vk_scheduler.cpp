@@ -159,6 +159,23 @@ void Scheduler::PopPendingOperations() {
     }
 }
 
+void Scheduler::BindPipeline(vk::PipelineBindPoint bind_point, vk::Pipeline pipeline) {
+    auto& session = sessions.back();
+    auto& bound_pipeline = bind_point == vk::PipelineBindPoint::eGraphics
+                               ? session.graphics_pipeline
+                               : session.compute_pipeline;
+    if (bound_pipeline != pipeline) {
+        session.primary.bindPipeline(bind_point, pipeline);
+        bound_pipeline = pipeline;
+    }
+}
+
+void Scheduler::InvalidateBoundPipelines() {
+    auto& session = sessions.back();
+    session.graphics_pipeline = nullptr;
+    session.compute_pipeline = nullptr;
+}
+
 void Scheduler::BeginSession() {
     EndSession();
 
