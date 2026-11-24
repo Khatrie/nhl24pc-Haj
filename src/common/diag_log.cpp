@@ -112,7 +112,7 @@ struct Counters {
         tc_overlap, tc_incompat, cpu_inval, cp_inval, gpu_inval, refresh, refresh_bytes, streamed,
         snapshots, render_passes, file_opens, file_reads, file_bytes, audio_out, audio_wait_ns,
         threads_created, flip_full, swap_recreates, cs_meta_clear, cs_image_copy, cs_image_clear,
-        cs_hle;
+        cs_hle, expand_alloc_ns, expand_buffer_ns, expand_detile_ns, expand_upload_ns, expand_copy_ns;
 };
 
 /// A compute dispatch kind replaced by an emulator fast path (one entry per kind + shader).
@@ -179,6 +179,11 @@ Counters Snapshot() {
         .cs_image_copy = ld(C::cs_image_copy),
         .cs_image_clear = ld(C::cs_image_clear),
         .cs_hle = ld(C::cs_hle),
+        .expand_alloc_ns = ld(C::tc_expand_alloc_ns),
+        .expand_buffer_ns = ld(C::tc_expand_buffer_ns),
+        .expand_detile_ns = ld(C::tc_expand_detile_ns),
+        .expand_upload_ns = ld(C::tc_expand_upload_ns),
+        .expand_copy_ns = ld(C::tc_expand_copy_ns),
     };
 }
 
@@ -338,7 +343,9 @@ constexpr const char* FramesHeader =
     "tc_expand,tc_depth_rec,tc_overlap,tc_incompat,cpu_inval,cp_inval,gpu_inval,refresh,"
     "refresh_kb,streamed,snapshots,scene_w,scene_h,rt_sizes,render_passes,vo_w,vo_h,win_w,win_h,"
     "flip_pending,file_reads,file_kb,audio_out,audio_wait_ms,cpu_ms,gpu_thr_ms,present_ms,sim_ms,"
-    "render_ms,jobs_ms,page_faults,cs_meta_clear,cs_image_copy,cs_image_clear,cs_hle,flags";
+    "render_ms,jobs_ms,page_faults,cs_meta_clear,cs_image_copy,cs_image_clear,cs_hle,flags,"
+    "expand_alloc_cpu_ms,expand_buffer_cpu_ms,expand_detile_cpu_ms,expand_upload_cpu_ms,"
+    "expand_copy_cpu_ms";
 
 #ifdef _WIN32
 u64 FileTimeTo100ns(const FILETIME& ft) {
@@ -1611,7 +1618,7 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
                        "{},{:.3f},{:.2f},{},{},{},{},{},{},{},{},{:.2f},{},{:.2f},{},{:.2f},{},{},{:.2f},{},"
                        "{},{},{:.2f},{:.2f},{:.2f},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
                        "{},{},{},{},{},{},{},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{},{},{},"
-                       "{},{},{}\n",
+                       "{},{},{},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}\n",
                        frame_no, t_s, dt_ms, cur.gpu_frame, d(&Counters::gfx_submits),
                        d(&Counters::asc_submits), d(&Counters::draws), d(&Counters::dispatches),
                        d(&Counters::skip_nopipe), d(&Counters::skip_bind), d(&Counters::pipes), pipe_ms,
@@ -1628,7 +1635,12 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
                        d(&Counters::audio_out), audio_wait_ms, cpu_ms, key_ms[SlotGpu],
                        key_ms[SlotPresent], key_ms[SlotSim], key_ms[SlotRender], key_ms[SlotJobs],
                        pf_delta, d(&Counters::cs_meta_clear), d(&Counters::cs_image_copy),
-                       d(&Counters::cs_image_clear), d(&Counters::cs_hle), flags);
+                       d(&Counters::cs_image_clear), d(&Counters::cs_hle), flags,
+                       double(d(&Counters::expand_alloc_ns)) / 1e6,
+                       double(d(&Counters::expand_buffer_ns)) / 1e6,
+                       double(d(&Counters::expand_detile_ns)) / 1e6,
+                       double(d(&Counters::expand_upload_ns)) / 1e6,
+                       double(d(&Counters::expand_copy_ns)) / 1e6);
         std::scoped_lock lk{s.frame_mutex};
         s.frames_buf += row;
     }

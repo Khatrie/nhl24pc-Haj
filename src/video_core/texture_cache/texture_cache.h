@@ -357,6 +357,14 @@ public:
     }
 
 private:
+    struct ImageRefreshTiming {
+        u64 buffer_ns{};
+        u64 detile_ns{};
+        u64 upload_ns{};
+    };
+
+    void RefreshImage(Image& image, ImageRefreshTiming* timing);
+
     /// Iterate over all page indices in a range
     template <typename Func>
     static void ForEachPage(PAddr addr, size_t size, Func&& func) {

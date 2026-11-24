@@ -4,6 +4,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Implemented enhancements
 
+- Diagnostic runs record CPU-side elapsed time for texture expansion in the frame CSV. The new columns distinguish image allocation and registration, source-buffer preparation, detiling, upload recording, and GPU image-copy recording. These timings describe host work and can include waits within those operations.
+
 - Exact texture-cache lookups now check the guest address bucket first and scan the full region on a miss. Overlap resolution, image refreshes, and readback behavior are preserved.
 - Diagnostic launches offer an F1 timing-only mode by default. It records a frame marker without a screenshot, draw log, or GPU image dump. Full capture is still available in the same tab.
 
@@ -25,6 +27,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 - Restart now starts the replacement process before shutdown and reuses the original game path, mounts, and patch selection. If process creation fails on Windows, the game stays open and reports the error.
 
 ## Architectural decisions
+
+- Checkpoint working changes on `codex/renderer-upstream-fixes` and push them to the configured GitHub origin. The settings, trophies, restart, and timing-marker baseline is checkpointed at `6776cd23`.
 
 - Keep experimental renderer and launcher changes on a separate branch. Prefer general emulation fixes and preserve existing quality and compatibility defaults.
 - Keep GPU-owned texture-cache mutation on the command thread. Track Vulkan pipeline binds per recording session and clear that state when host rendering bypasses it.

@@ -45,6 +45,11 @@ inline std::atomic<u64> tc_cp_inval{0};         ///< texture cache: images hit b
 inline std::atomic<u64> tc_gpu_inval{0};        ///< texture cache: images marked GpuDirty
 inline std::atomic<u64> tc_refresh{0};          ///< images (re)uploaded from guest memory
 inline std::atomic<u64> tc_refresh_bytes{0};
+inline std::atomic<u64> tc_expand_alloc_ns{0};
+inline std::atomic<u64> tc_expand_buffer_ns{0};
+inline std::atomic<u64> tc_expand_detile_ns{0};
+inline std::atomic<u64> tc_expand_upload_ns{0};
+inline std::atomic<u64> tc_expand_copy_ns{0};
 inline std::atomic<u64> tc_snapshots{0};        ///< streamed-image snapshots taken
 inline std::atomic<u64> file_opens{0};          ///< guest file opens
 inline std::atomic<u64> file_reads{0};          ///< guest read calls (read/pread/readv/aio)
