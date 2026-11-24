@@ -125,6 +125,7 @@ namespace NhlPort
             { "diag_description", new[] { "Spustí hru s diagnostikou. Stlačte F1 pri spomalení.", "Start the game with diagnostics. Press F1 when you notice a slowdown." } },
             { "diag_marker_only", new[] { "F1 iba označí čas (bez snímok a výpisov GPU)", "F1 marks timing only (no screenshots or GPU dumps)" } },
             { "diag_play", new[] { "Hrať s diagnostikou", "Play with diagnostics" } },
+            { "diag_record_on_play", new[] { "Zaznamenávať výkon pri každom spustení", "Record performance on every Play" } },
             { "diag_logs", new[] { "Otvoriť záznamy", "Open logs" } },
             { "diag_captures", new[] { "Otvoriť snímky", "Open captures" } },
             { "diag_fps", new[] { "Zobraziť FPS v hre", "Show FPS overlay in-game" } },
@@ -581,6 +582,7 @@ namespace NhlPort
         CheckBox neoBox;
         CheckBox fpsOverlayBox;
         CheckBox diagMarkerOnlyBox;
+        CheckBox diagRecordOnPlayBox;
         Process diagnosticGame;
         CheckBox stretchBox;
         CheckBox fsrBox;
@@ -1103,6 +1105,7 @@ namespace NhlPort
             Launcher["language"] = Loc.Lang;
             Launcher["show_fps"] = fpsOverlayBox != null && fpsOverlayBox.Checked;
             Launcher["diag_marker_only"] = diagMarkerOnlyBox.Checked;
+            Launcher["diag_record_on_play"] = diagRecordOnPlayBox.Checked;
             // Sharpening source: 0 = built-in RCAS pass (ReShade disabled for the game), 1 = ReShade
             // (the built-in sharpness is written as 0 so the two never stack; the slider value is kept).
             Launcher["sharpen_mode"] = sharpenModeBox.SelectedIndex;
@@ -2279,7 +2282,11 @@ namespace NhlPort
             logs.Click += delegate { OpenDiagnosticFolder("log"); };
             var captures = new FlatButton { Left = 436, Top = 190, Width = 160, Height = 36, Text = Loc.T("diag_captures") };
             captures.Click += delegate { OpenDiagnosticFolder("captures"); };
-            page.Controls.AddRange(new Control[] { title, description, fpsOverlayBox, diagMarkerOnlyBox, play, logs, captures });
+            diagRecordOnPlayBox = new CheckBox { Left = 24, Top = 245, Width = 760, Height = 28,
+                Font = Theme.Body, ForeColor = Color.White, Text = Loc.T("diag_record_on_play"),
+                Checked = ToBool(LauncherValue("diag_record_on_play", false), false) };
+            page.Controls.AddRange(new Control[] { title, description, fpsOverlayBox, diagMarkerOnlyBox,
+                play, logs, captures, diagRecordOnPlayBox });
             return page;
         }
 
@@ -2324,10 +2331,12 @@ namespace NhlPort
                 Arguments = "-g \"" + eboot + "\"" };
             if (File.Exists(Path.Combine(baseDir, "user", "patches", "nhl24.xml")))
                 psi.Arguments += " -p nhl24.xml";
-            if (diagnostics)
+            if (diagnostics || diagRecordOnPlayBox.Checked)
             {
                 psi.EnvironmentVariables["NHLPORT_DIAG"] = "1";
-                psi.EnvironmentVariables["NHLPORT_DIAG_MARKER_ONLY"] = diagMarkerOnlyBox.Checked ? "1" : "0";
+                psi.EnvironmentVariables["NHLPORT_DIAG_FRAMES"] = "1";
+                psi.EnvironmentVariables["NHLPORT_DIAG_MARKER_ONLY"] =
+                    !diagnostics || diagMarkerOnlyBox.Checked ? "1" : "0";
             }
             if (fpsOverlayBox != null && fpsOverlayBox.Checked)
                 psi.Arguments += " --show-fps";

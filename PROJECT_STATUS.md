@@ -4,6 +4,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Implemented enhancements
 
+- The launcher offers persistent full-session performance logging on ordinary Play. It writes frame, thread, and stutter data automatically and uses timing-only F1 behavior. The dedicated diagnostic launch still offers full captures.
+
 - The frame CSV records image construction separately for ordinary and expanded textures. Subtract construction time from the corresponding allocation total to estimate cache-registration time.
 
 - Guest-to-staging reads now batch consecutive pages backed by contiguous memory into one copy. Unmapped spans remain zero-filled, and discontiguous or aliased pages still use their individual backing addresses. An isolated check matched the former implementation across 2,503 ranges. In-game timing gains are unmeasured.
