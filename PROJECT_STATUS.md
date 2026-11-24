@@ -1,6 +1,6 @@
 # NHL24 PC project status
 
-Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The working baseline on `main` is checkpointed at `ecfdda3e`. The initial renderer backports and their binaries are committed as `e4a29ac5` and `464a6a1c`. The current checkpoint includes the launcher, timing, renderer, and in-game overlay updates. The Windows Release build and launcher rebuild succeeded, and both local release executables were verified against their build outputs. The user reports the branch is working well in gameplay. Performance gains have not been benchmarked.
+Updated November 24, 2026. Active branch: `codex/renderer-upstream-fixes`. The working baseline on `main` is checkpointed at `ecfdda3e`. The initial renderer backports and their binaries are committed as `e4a29ac5` and `464a6a1c`. The current checkpoint includes the launcher, timing, renderer, and in-game overlay updates. The Windows Release build and launcher rebuild succeeded, and both local release executables were verified against their build outputs. The user reports the branch is working well in gameplay. Performance gains have not been benchmarked.
 
 ## Implemented enhancements
 
@@ -50,7 +50,9 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Known bugs and bottlenecks
 
-- **Arena image replacement:** The automatic 10,507-frame run attributed 159 ms of a 400 ms arena-loading frame to expanded-image construction and under 0.1 ms to cache registration. Sampled expansion logs show several one-mip-at-a-time chains, including 512×512 single-layer and 256×256 eight-layer images. Avoid predicting a larger guest footprint without a verified resource layout. Vulkan allocation and image construction overhead remain unmeasured separately.
+- **November 24 full-gameplay staging trace:** 22,232 frames, 16.66 ms median, and 33.40 ms p99. The extended idle-retention policy recorded zero retained bytes throughout. The 350 ms arena-loading frame spent 171 ms inside `vmaCreateImage` and 138 ms copying guest data, with no compile or readback wait. A separate 134 ms gameplay frame spent 67 ms copying guest memory into staging, with a 100 MiB request served by a new buffer. Prioritize tracing image allocations during expansion and large staging requests during play.
+
+- **Arena image replacement:** The automatic 10,507-frame run attributed 159 ms of a 400 ms arena-loading frame to expanded-image construction and under 0.1 ms to cache registration. Sampled expansion logs show several one-mip-at-a-time chains, including 512×512 single-layer and 256×256 eight-layer images. Avoid predicting a larger guest footprint without a verified resource layout.
 
 - **November 24 post-batching trace:** Seven timing-only markers, 16.67 ms median, 33.56 ms p99, and 83.17 ms p99.9. The largest arena-loading frame fell from 516 to 366 ms between runs. Its expansion guest-copy time fell from 163 to 108 ms, while total texture refresh volume fell from about 710 to 613 MiB. The runs differ in scene workload and starting memory headroom, so the difference does not isolate the batching gain. Expanded-image allocation and registration still took 113 ms in that frame. A later 217 ms frame recorded 104 ms of shader and pipeline compilation, and the 100 ms frame before marker 6 recorded 36 ms of readback waits.
 
