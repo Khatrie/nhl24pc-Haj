@@ -1,10 +1,12 @@
 //  SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 //  SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <charconv>
 #include <map>
 #include <ranges>
 #include <ImGuiFileDialog.h>
 #include <cmrc/cmrc.hpp>
+#include <pugixml.hpp>
 #include <stb_image.h>
 
 #include "common/elf_info.h"
@@ -12,6 +14,8 @@
 #include "common/path_util.h"
 #include "core/cpu_patches.h"
 #include "core/devtools/layer.h"
+#include "core/libraries/system/userservice.h"
+#include "input/input_handler.h"
 #include "imgui/imgui_std.h"
 #include "settings_dialog_imgui.h"
 
@@ -21,6 +25,8 @@ constexpr float gameImageSize = 200.f;
 constexpr float settingsIconSize = 125.f;
 
 namespace ImGuiEmuSettings {
+
+static float in_game_text_scale = 0.30f;
 
 int SettingsWindow::GetComboIndex(std::string selection, std::vector<std::string> options) {
     for (int i = 0; i < options.size(); i++) {
@@ -52,6 +58,7 @@ void SettingsWindow::LoadSettings(std::string profile) {
     consoleLanguageSetting = GetComboIndex(language, languageOptions);
     volumeSetting = EmulatorSettings.GetVolumeSlider();
     showSplashSetting = EmulatorSettings.IsShowSplash();
+    showFpsSetting = isGameRunning ? Overlay::IsSimpleFpsEnabled() : EmulatorSettings.IsShowFpsCounter();
     audioBackendSetting = EmulatorSettings.GetAudioBackend();
 
     /////////// Graphics Tab
@@ -89,22 +96,22 @@ void SettingsWindow::LoadSettings(std::string profile) {
     logSyncSetting = EmulatorSettings.IsLogSync();
 
     /////////// Experimental Tab
+    readbacksModeSetting = EmulatorSettings.GetReadbacksMode();
+    neoModeSetting = EmulatorSettings.IsNeo();
+    pipelineCacheEnabledSetting = EmulatorSettings.IsPipelineCacheEnabled();
     if (isSpecific) {
-        readbacksModeSetting = EmulatorSettings.GetReadbacksMode();
         readbackLinearImagesSetting = EmulatorSettings.IsReadbackLinearImagesEnabled();
         directMemoryAccessSetting = EmulatorSettings.IsDirectMemoryAccessEnabled();
         windowsGuestRedZoneProtectionModeSetting = EmulatorSettings.IsRedZonePatchingEnabled();
         devkitConsoleSetting = EmulatorSettings.IsDevKit();
-        neoModeSetting = EmulatorSettings.IsNeo();
         shadnetEnabledSetting = EmulatorSettings.IsShadNetEnabledSetting();
         connectedNetworkSetting = EmulatorSettings.IsConnectedToNetwork();
-        pipelineCacheEnabledSetting = EmulatorSettings.IsPipelineCacheEnabled();
         pipelineCacheArchiveSetting = EmulatorSettings.IsPipelineCacheArchived();
         extraDmemSetting = EmulatorSettings.GetExtraDmemInMBytes();
     }
 }
 
-void SettingsWindow::SaveSettings(std::string profile) {
+bool SettingsWindow::SaveSettings(std::string profile) {
     const bool isSpecific = currentProfile != "Global";
 
     /////////// General Tab
@@ -112,6 +119,10 @@ void SettingsWindow::SaveSettings(std::string profile) {
                                         isSpecific);
     EmulatorSettings.SetVolumeSlider(volumeSetting, isSpecific);
     EmulatorSettings.SetShowSplash(showSplashSetting, isSpecific);
+    if (isGameRunning) {
+        EmulatorSettings.SetShowFpsCounter(showFpsSetting, isSpecific);
+        Overlay::SetSimpleFps(showFpsSetting);
+    }
     EmulatorSettings.SetAudioBackend(audioBackendSetting, isSpecific);
 
     /////////// Graphics Tab
@@ -150,22 +161,24 @@ void SettingsWindow::SaveSettings(std::string profile) {
     EmulatorSettings.SetLogSync(logSyncSetting, isSpecific);
 
     /////////// Experimental Tab
+    if (isSpecific || isGameRunning) {
+        EmulatorSettings.SetReadbacksMode(readbacksModeSetting, isSpecific);
+        EmulatorSettings.SetNeo(neoModeSetting, isSpecific);
+        EmulatorSettings.SetPipelineCacheEnabled(pipelineCacheEnabledSetting, isSpecific);
+    }
     if (isSpecific) {
-        EmulatorSettings.SetReadbacksMode(readbacksModeSetting, true);
         EmulatorSettings.SetReadbackLinearImagesEnabled(readbackLinearImagesSetting, true);
         EmulatorSettings.SetDirectMemoryAccessEnabled(directMemoryAccessSetting, true);
         // Windows static guest red-zone protection
         EmulatorSettings.SetRedZonePatchingEnabled(windowsGuestRedZoneProtectionModeSetting, true);
         EmulatorSettings.SetDevKit(devkitConsoleSetting, true);
-        EmulatorSettings.SetNeo(neoModeSetting, true);
         EmulatorSettings.SetShadNetEnabled(shadnetEnabledSetting, true);
         EmulatorSettings.SetConnectedToNetwork(connectedNetworkSetting, true);
-        EmulatorSettings.SetPipelineCacheEnabled(pipelineCacheEnabledSetting, true);
         EmulatorSettings.SetPipelineCacheArchived(pipelineCacheArchiveSetting, true);
         EmulatorSettings.SetExtraDmemInMBytes(extraDmemSetting, true);
     }
 
-    isSpecific ? EmulatorSettings.Save(profile) : EmulatorSettings.Save();
+    return isSpecific ? EmulatorSettings.Save(profile) : EmulatorSettings.Save();
 }
 
 void SettingsWindow::SaveInstallDirs() {
@@ -214,6 +227,14 @@ SettingsWindow::SettingsWindow(bool gameRunning) : isGameRunning(gameRunning) {
     loadTexture("src/resources/big_picture/log.png", logTexture);
     loadTexture("src/resources/big_picture/folder.png", foldersTexture);
     loadTexture("src/resources/big_picture/profiles.png", profilesTexture);
+    if (gameRunning) {
+        constexpr std::array grades{"bronze", "silver", "gold", "platinum"};
+        for (size_t index = 0; index < grades.size(); ++index) {
+            const auto file = resource.open(std::string("src/resources/") + grades[index] + ".png");
+            trophyGradeIcons[index] =
+                ImGui::RefCountedTexture::DecodePngTexture(std::vector<u8>(file.begin(), file.end()));
+        }
+    }
 
     auto languageKeys = std::views::keys(languageMap);
     languageOptions.assign(languageKeys.begin(), languageKeys.end());
@@ -244,7 +265,7 @@ SettingsWindow::SettingsWindow(bool gameRunning) : isGameRunning(gameRunning) {
 void SettingsWindow::Prepare() {
     uiScale = EmulatorSettings.GetBigPictureScale() / 1000.f;
     if (isGameRunning) {
-        uiScale = std::min(uiScale, 0.85f);
+        uiScale = in_game_text_scale;
     }
 }
 
@@ -260,20 +281,33 @@ void SettingsWindow::DeInit() {
     }
 }
 void SettingsWindow::DrawSettings(bool* open, const std::function<void()>& applySettings) {
+    if (isGameRunning) {
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * uiScale);
+    }
     ImGui::PushStyleColor(ImGuiCol_WindowBg,
-                          ImVec4(0.06f, 0.07f, 0.09f, isGameRunning ? 0.84f : 1.0f));
+                          ImVec4(0.025f, 0.055f, 0.13f, isGameRunning ? 0.66f : 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.035f, 0.13f, 0.30f, 0.96f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.045f, 0.20f, 0.43f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.05f, 0.21f, 0.45f, 0.95f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.10f, 0.33f, 0.62f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(1.0f, 0.76f, 0.19f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.20f, 0.40f, 0.70f, 1.00f));   // blue
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered,
                           ImVec4(0.25f, 0.50f, 0.85f, 1.00f)); // lighter blue
     ImGui::PushStyleColor(ImGuiCol_SliderGrabActive,
-                          ImVec4(0.26f, 0.59f, 0.98f, 0.80f)); // another light blue
+                          ImVec4(1.0f, 0.76f, 0.19f, 0.95f));
     ImGui::PushStyleColor(ImGuiCol_SliderGrab,
-                          ImVec4(0.26f, 0.59f, 0.98f, 0.80f)); // another light blue
+                          ImVec4(0.93f, 0.65f, 0.16f, 0.95f));
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, isGameRunning ? 10.0f : 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f * uiScale);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f * uiScale, 10.0f * uiScale));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f * uiScale, 10.0f * uiScale));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, isGameRunning ? 0.0f : ImGui::GetStyle().ScrollbarRounding);
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, isGameRunning ? 0.0f : ImGui::GetStyle().GrabRounding);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, isGameRunning ? 0.0f : 5.0f * uiScale);
+    const float control_scale = isGameRunning ? std::max(0.65f, uiScale) : uiScale;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f * control_scale, 8.0f * control_scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f * control_scale, 6.0f * control_scale));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.5f * uiScale);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     const float padding = (isGameRunning ? 12.0f : 20.0f) * uiScale;
@@ -284,38 +318,48 @@ void SettingsWindow::DrawSettings(bool* open, const std::function<void()>& apply
     DrawCategoryTabs();
     DrawMainContent(open, applySettings);
 
-    ImGui::PopStyleVar(8);
-    ImGui::PopStyleColor(5);
+    ImGui::PopStyleVar(12);
+    ImGui::PopStyleColor(10);
 
     ImGui::End();
+    if (isGameRunning) {
+        ImGui::PopFont();
+    }
 }
 
 void SettingsWindow::SetupWindow() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     if (isGameRunning) {
-        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f));
-        ImGui::SetNextWindowSize(ImVec2(std::min(560.0f, viewport->WorkSize.x - 32.0f),
-                                       std::min(420.0f, viewport->WorkSize.y - 32.0f)));
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f),
+                                ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(std::min(630.0f, viewport->WorkSize.x * 0.92f),
+                                       std::min(480.0f, viewport->WorkSize.y * 0.92f)),
+                                 ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints(
+            ImVec2(std::min(420.0f, viewport->WorkSize.x), std::min(300.0f, viewport->WorkSize.y)),
+            viewport->WorkSize);
     } else {
         ImGui::SetNextWindowPos(viewport->WorkPos);
         ImGui::SetNextWindowSize(viewport->WorkSize);
     }
 
-    ImGui::Begin("Settings", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::Begin(isGameRunning ? "NHL 24 PC | In-game settings###NhlUndockedSettings" : "Settings",
+                 nullptr, isGameRunning ? ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking
+                               : ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoScrollWithMouse);
     if (!isGameRunning) {
         ImGui::DrawPrettyBackground();
+        ImGui::SetWindowFontScale(uiScale);
     }
-    ImGui::SetWindowFontScale(uiScale);
 
     if (ImGui::IsWindowAppearing()) {
+        ImGui::SetWindowFocus();
         ImGui::SetKeyboardFocusHere();
     }
 
     SettingsCategory firstCategory =
         isGameRunning ? SettingsCategory::General : SettingsCategory::Profiles;
     SettingsCategory lastCategory =
-        isGameRunning ? SettingsCategory::Input
+        isGameRunning ? SettingsCategory::Trophy
                       : currentProfile != "Global" ? SettingsCategory::Experimental
                                                     : SettingsCategory::Log;
 
@@ -336,7 +380,15 @@ void SettingsWindow::SetupWindow() {
 }
 
 void SettingsWindow::DrawCategoryTabs() {
-    ImVec4 settingsColor = ImVec4(0.1f, 0.1f, 0.12f, 0.8f); // Darker gray
+    if (isGameRunning) {
+        AddCategory("General", generalTexture, SettingsCategory::General);
+        AddCategory("Graphics", graphicsTexture, SettingsCategory::Graphics);
+        AddCategory("Input", inputTexture, SettingsCategory::Input);
+        AddCategory("Trophies", trophyTexture, SettingsCategory::Trophy);
+        ImGui::Separator();
+        return;
+    }
+    ImVec4 settingsColor(0.1f, 0.1f, 0.12f, isGameRunning ? 0.12f : 0.8f);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, settingsColor);
 
     float vertSize = (settingsIconSize * uiScale + ImGui::CalcTextSize("Profiles").y) +
@@ -363,8 +415,8 @@ void SettingsWindow::DrawCategoryTabs() {
     AddCategory("General", generalTexture, SettingsCategory::General);
     AddCategory("Graphics", graphicsTexture, SettingsCategory::Graphics);
     AddCategory("Input", inputTexture, SettingsCategory::Input);
+    AddCategory(isGameRunning ? "Trophies" : "Trophy", trophyTexture, SettingsCategory::Trophy);
     if (!isGameRunning) {
-        AddCategory("Trophy", trophyTexture, SettingsCategory::Trophy);
         AddCategory("Game Folders", foldersTexture, SettingsCategory::Folders);
         AddCategory("Log", logTexture, SettingsCategory::Log);
         if (currentProfile != "Global") {
@@ -380,8 +432,11 @@ void SettingsWindow::DrawCategoryTabs() {
 void SettingsWindow::AddCategory(std::string name,
                                  std::variant<SDL_Texture*, ImGui::RefCountedTexture> texture,
                                  SettingsCategory category) {
-    ImGui::SameLine();
+    if (!isGameRunning || category != SettingsCategory::General) {
+        ImGui::SameLine();
+    }
     if (isGameRunning) {
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 4.0f));
         const bool selected = currentCategory == category;
         if (selected) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_ButtonHovered]);
@@ -392,6 +447,7 @@ void SettingsWindow::AddCategory(std::string name,
         if (selected) {
             ImGui::PopStyleColor();
         }
+        ImGui::PopStyleVar();
         return;
     }
     ImGui::BeginGroup();
@@ -426,7 +482,7 @@ void SettingsWindow::AddCategory(std::string name,
 }
 
 void SettingsWindow::DrawMainContent(bool* open, const std::function<void()>& applySettings) {
-    ImVec4 settingsColor = ImVec4(0.1f, 0.1f, 0.12f, 0.8f); // Darker gray
+    ImVec4 settingsColor(0.1f, 0.1f, 0.12f, isGameRunning ? 0.12f : 0.8f);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, settingsColor);
 
     std::string centeredText;
@@ -440,6 +496,17 @@ void SettingsWindow::DrawMainContent(bool* open, const std::function<void()>& ap
         ImGui::Separator();
     }
 
+    if (isGameRunning && currentCategory == SettingsCategory::Trophy) {
+        DrawGameTrophies();
+        ImGui::PopStyleColor();
+        if (ImGui::Button("Close")) {
+            DeInit();
+            *open = false;
+        }
+        return;
+    }
+    gameTrophies.reset();
+
     if (currentCategory == SettingsCategory::Profiles) {
         DrawProfileSelector();
     } else if (currentCategory == SettingsCategory::Folders) {
@@ -451,6 +518,60 @@ void SettingsWindow::DrawMainContent(bool* open, const std::function<void()>& ap
     ImGui::PopStyleColor();
 
     ImGui::Separator();
+    if (isGameRunning) {
+        if (ImGui::Button("Apply & save")) {
+            const bool restart_needed =
+                fullscreenModeOptions.at(fullscreenModeSetting) != EmulatorSettings.GetFullScreenMode() ||
+                presentModeOptions.at(presentModeSetting) != EmulatorSettings.GetPresentMode() ||
+                windowWidthSetting != EmulatorSettings.GetWindowWidth() ||
+                windowHeightSetting != EmulatorSettings.GetWindowHeight() ||
+                hdrAllowedSetting != EmulatorSettings.IsHdrAllowed() ||
+                dlssEnabledSetting != EmulatorSettings.IsDlssEnabled() ||
+                dlssQualitySetting != EmulatorSettings.GetDlssQuality() ||
+                dlssSharpnessSetting != EmulatorSettings.GetDlssSharpness() ||
+                vblankFrequencySetting != EmulatorSettings.GetVblankFrequency() ||
+                neoModeSetting != EmulatorSettings.IsNeo() ||
+                readbacksModeSetting != EmulatorSettings.GetReadbacksMode() ||
+                pipelineCacheEnabledSetting != EmulatorSettings.IsPipelineCacheEnabled();
+            if (!SaveSettings(currentProfile == "Global" ? "Global" : runningGameSerial)) {
+                ImGui::OpenPopup("Settings could not be saved");
+            } else if (restart_needed) {
+                ImGui::OpenPopup("Restart NHL 24?");
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close")) {
+            DeInit();
+            *open = false;
+        }
+        if (ImGui::BeginPopupModal("Restart NHL 24?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted("Restart now to apply your saved settings?");
+            ImGui::TextUnformatted("Save any game progress before restarting.");
+            if (ImGui::Button("Restart now")) {
+                SDL_Event event{};
+                event.type = SDL_EVENT_RESTART_GAME;
+                if (SDL_PushEvent(&event)) {
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Later")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SetItemDefaultFocus();
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopupModal("Settings could not be saved", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextUnformatted("Check the emulator log for details.");
+            if (ImGui::Button("OK")) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SetItemDefaultFocus();
+            ImGui::EndPopup();
+        }
+        return;
+    }
     if (!isGameRunning) {
         ImGui::SetNextItemWidth(300.0f * uiScale);
         static float sliderScale2 = 1.0f;
@@ -518,6 +639,160 @@ void SettingsWindow::DrawMainContent(bool* open, const std::function<void()>& ap
             applySettings();
         }
     }
+}
+
+void SettingsWindow::DrawGameTrophies() {
+    const bool entering = !gameTrophies.has_value();
+    const bool refresh = ImGui::Button("Refresh trophies");
+    if (!gameTrophies || refresh) {
+        auto& entries = gameTrophies.emplace();
+        int user_id{};
+        const bool has_user = Libraries::UserService::sceUserServiceGetInitialUser(&user_id) == 0;
+        for (const auto& [label, communication_id] :
+             Common::ElfInfo::Instance().GetTrophyIndexMap()) {
+            const auto definitions = Common::FS::GetUserPath(Common::FS::PathType::TrophyDir) /
+                                     communication_id / "Xml" / "TROP.XML";
+            pugi::xml_document metadata;
+            if (!metadata.load_file(definitions.c_str())) {
+                continue;
+            }
+
+            pugi::xml_document progress;
+            if (has_user) {
+                const auto progress_path = EmulatorSettings.GetHomeDir() / std::to_string(user_id) /
+                                           "trophy" / (communication_id + ".xml");
+                progress.load_file(progress_path.c_str());
+            }
+            const auto progress_root = progress.child("trophyconf");
+            const auto trophies = metadata.child("trophyconf").children("trophy");
+            for (const auto& trophy : trophies) {
+                const auto saved = progress_root.find_child_by_attribute(
+                    "trophy", "id", trophy.attribute("id").value());
+                const bool earned = saved.attribute("unlockstate").as_bool();
+                const bool hidden =
+                    !earned && std::string_view(trophy.attribute("hidden").value()) == "yes";
+                TrophyEntry entry{hidden ? "Hidden trophy" : trophy.child_value("name"),
+                                  hidden ? "" : trophy.child_value("detail"), earned,
+                                  trophy.attribute("ttype").value()[0]};
+                if (!hidden && entry.grade == 'P') {
+                    const int platinum_id = trophy.attribute("id").as_int(-1);
+                    for (const auto& prerequisite : trophies) {
+                        if (prerequisite.attribute("pid").as_int(-1) != platinum_id) {
+                            continue;
+                        }
+                        ++entry.target;
+                        const auto unlocked = progress_root.find_child_by_attribute(
+                            "trophy", "id", prerequisite.attribute("id").value());
+                        entry.progress += unlocked.attribute("unlockstate").as_bool();
+                    }
+                } else {
+                    std::string_view requirement = entry.description;
+                    if (requirement.starts_with("Complete ") || requirement.starts_with("Collect ")) {
+                        requirement.remove_prefix(requirement.find(' ') + 1);
+                        int target{};
+                        const auto end = requirement.data() + requirement.size();
+                        const auto parsed = std::from_chars(requirement.data(), end, target);
+                        if (parsed.ec == std::errc{} && parsed.ptr != end && *parsed.ptr == ' ' &&
+                            target > 1) {
+                            entry.target = target;
+                            entry.progress = earned ? target : -1;
+                        }
+                    }
+                }
+                entries.push_back(std::move(entry));
+            }
+        }
+    }
+
+    const auto earned = std::ranges::count_if(*gameTrophies, &TrophyEntry::earned);
+    ImGui::SameLine();
+    ImGui::Text("%zu / %zu earned", static_cast<size_t>(earned), gameTrophies->size());
+    if (ImGui::BeginChild("Game trophies", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()),
+                          ImGuiChildFlags_NavFlattened)) {
+        if (gameTrophies->empty()) {
+            ImGui::TextWrapped("No trophy metadata is available for this game.");
+        }
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(10.0f, 9.0f));
+        ImGui::PushStyleColor(ImGuiCol_TableBorderLight, ImVec4(0.50f, 0.64f, 0.82f, 0.42f));
+        if (ImGui::BeginTable("Trophy list", 3, ImGuiTableFlags_SizingStretchProp |
+                                                     ImGuiTableFlags_BordersInnerH)) {
+            ImGui::TableSetupColumn("Grade", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+            ImGui::TableSetupColumn("Trophy", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed,
+                                    ImGui::CalcTextSize("EARNED").x + 12.0f);
+            for (size_t index = 0; index < gameTrophies->size(); ++index) {
+                const auto& trophy = (*gameTrophies)[index];
+                const size_t grade = trophy.grade == 'P' ? 3 : trophy.grade == 'G' ? 2 :
+                                     trophy.grade == 'S' ? 1 : 0;
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, 58.0f);
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                    trophy.earned ? IM_COL32(65, 94, 60, 112) : IM_COL32(20, 42, 79, 48));
+                ImGui::TableNextColumn();
+                const auto icon_cell = ImGui::GetCursorScreenPos();
+                const float icon_center_x = icon_cell.x + ImGui::GetContentRegionAvail().x * 0.5f;
+                ImGui::TableNextColumn();
+                const auto text_pos = ImGui::GetCursorScreenPos();
+                const float wrap_width = ImGui::GetContentRegionAvail().x;
+                float text_height = ImGui::CalcTextSize(trophy.name.c_str(), nullptr, false, wrap_width).y;
+                if (!trophy.description.empty()) {
+                    text_height += ImGui::GetStyle().ItemSpacing.y +
+                                   ImGui::CalcTextSize(trophy.description.c_str(), nullptr, false,
+                                                       wrap_width).y;
+                }
+                if (trophy.target > 0) {
+                    text_height += ImGui::GetTextLineHeightWithSpacing();
+                }
+                ImGui::PushID(static_cast<int>(index));
+                if (entering && index == 0) {
+                    ImGui::SetKeyboardFocusHere();
+                }
+                ImGui::Selectable("##Trophy", false, ImGuiSelectableFlags_SpanAllColumns,
+                                  ImVec2(0.0f, std::max(40.0f, text_height)));
+                const bool focused = ImGui::IsItemFocused();
+                ImGui::PopID();
+                if (focused) {
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(40, 82, 138, 200));
+                }
+                ImGui::SetCursorScreenPos(text_pos);
+                ImGui::TextWrapped("%s", trophy.name.c_str());
+                if (!trophy.description.empty()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.76f, 0.82f, 0.92f, 1.0f));
+                    ImGui::TextWrapped("%s", trophy.description.c_str());
+                    ImGui::PopStyleColor();
+                }
+                if (trophy.target > 0) {
+                    if (trophy.grade == 'P') {
+                        ImGui::TextDisabled("%d / %d required trophies earned", trophy.progress,
+                                            trophy.target);
+                    } else if (trophy.progress < 0) {
+                        ImGui::TextDisabled("Goal: %d | Progress not reported", trophy.target);
+                    } else {
+                        ImGui::TextDisabled("%d / %d completed", trophy.progress, trophy.target);
+                    }
+                }
+                const float row_content_bottom = ImGui::GetItemRectMax().y;
+                ImGui::TableSetColumnIndex(0);
+                const auto& icon = trophyGradeIcons[grade];
+                if (icon) {
+                    constexpr float icon_half_size = 15.0f;
+                    const float center_y = (icon_cell.y +
+                        std::max(icon_cell.y + 40.0f, row_content_bottom)) * 0.5f;
+                    ImGui::GetWindowDrawList()->AddImage(
+                        icon.GetTexture().im_id,
+                        ImVec2(icon_center_x - icon_half_size, center_y - icon_half_size),
+                        ImVec2(icon_center_x + icon_half_size, center_y + icon_half_size));
+                }
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextColored(trophy.earned ? ImVec4(1.0f, 0.81f, 0.30f, 1.0f)
+                                                : ImVec4(0.76f, 0.82f, 0.92f, 1.0f),
+                                   "%s", trophy.earned ? "EARNED" : "LOCKED");
+            }
+            ImGui::EndTable();
+        }
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+    }
+    ImGui::EndChild();
 }
 
 void SettingsWindow::DrawProfileSelector() {
@@ -756,6 +1031,17 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
             ImGui::TableSetupColumn("Value");
 
             AddSettingSliderInt("Volume", volumeSetting, 0, 500);
+            if (isGameRunning) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted("Text size");
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::SliderFloat("##OverlayTextSize", &in_game_text_scale, 0.30f, 0.95f,
+                                       "%.2f")) {
+                    uiScale = in_game_text_scale;
+                }
+            }
             if (!isGameRunning) {
                 AddSettingCombo("Console Language", consoleLanguageSetting, languageOptions);
                 AddSettingCheckbox("Show Splash Screen When Launching Game", showSplashSetting);
@@ -771,14 +1057,24 @@ void SettingsWindow::DrawSettingsTable(SettingsCategory category) {
                                                   : 500.0f * uiScale);
             ImGui::TableSetupColumn("Value");
 
-            AddSettingCombo("Display Mode", fullscreenModeSetting, fullscreenModeOptions);
-            AddSettingCombo("Present Mode", presentModeSetting, presentModeOptions);
+            AddSettingCombo(isGameRunning ? "Display mode (restart)" : "Display Mode",
+                            fullscreenModeSetting, fullscreenModeOptions);
+            AddSettingCombo(isGameRunning ? "Present mode (restart)" : "Present Mode",
+                            presentModeSetting, presentModeOptions);
             if (!isGameRunning) {
                 AddSettingSliderInt("Window Width", windowWidthSetting, 0, 8000);
                 AddSettingSliderInt("Window Height", windowHeightSetting, 0, 7000);
             }
-            AddSettingCheckbox("Enable HDR", hdrAllowedSetting);
+            AddSettingCheckbox(isGameRunning ? "HDR (restart)" : "Enable HDR", hdrAllowedSetting);
             AddSettingCheckbox("Enable FSR", fsrEnabledSetting);
+            if (isGameRunning) {
+                AddSettingCheckbox("Show FPS", showFpsSetting);
+                AddSettingSliderInt("Output width (restart)", windowWidthSetting, 640, 7680);
+                AddSettingSliderInt("Output height (restart)", windowHeightSetting, 360, 4320);
+                AddSettingCheckbox("PS4 Pro mode (restart)", neoModeSetting);
+                AddSettingCombo("GPU readbacks (restart)", readbacksModeSetting, readbacksModeOptions);
+                AddSettingCheckbox("Vulkan driver cache (restart)", pipelineCacheEnabledSetting);
+            }
             AddSettingCheckbox("Enable DLSS (RTX, restart)", dlssEnabledSetting);
             if (dlssEnabledSetting) {
                 AddSettingCombo("DLSS quality (restart)", dlssQualitySetting,

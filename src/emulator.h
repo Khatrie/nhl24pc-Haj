@@ -42,8 +42,9 @@ public:
     /**
      * Launches a new emulator process with the supplied CLI arguments, then terminates this
      * process. The new process waits for this one to exit before initializing.
+     * Returns if the replacement process could not be started.
      */
-    [[noreturn]] void Relaunch(std::vector<std::string> args);
+    void Relaunch(std::vector<std::string> args);
 
     const char* executableName;
     bool waitForDebuggerBeforeRun{false};

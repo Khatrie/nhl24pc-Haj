@@ -8,6 +8,7 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <SDL3/SDL_messagebox.h>
 #include <fmt/core.h>
 #include <fmt/xchar.h>
 #include <hwinfo/hwinfo.h>
@@ -284,6 +285,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
                    std::optional<std::filesystem::path> p_game_folder,
                    std::vector<std::pair<std::filesystem::path, std::string>> mounts,
                    std::vector<std::string> const& env_vars, bool append_log) {
+    const auto launch_file = std::filesystem::absolute(file);
     Common::SetCurrentThreadName("shadPS4:Main");
     if (waitForDebuggerBeforeRun) {
         Debugger::WaitForDebuggerAttach();
@@ -551,6 +553,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         LOG_INFO(Loader, "PSVR Supported: {}", (bool)psf_attributes.support_ps_vr.Value());
         LOG_INFO(Loader, "PSVR Required: {}", (bool)psf_attributes.require_ps_vr.Value());
     }
+    const auto restart_guest_args = args;
     if (!args.empty()) {
         const auto argc = std::min<size_t>(args.size(), 32);
         for (auto i = 0; i < argc; i++) {
@@ -746,6 +749,39 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     window->InitTimers();
     while (window->IsOpen()) {
         window->WaitEvent();
+        if (window->ConsumeRestartRequest()) {
+            std::vector<std::string> restart_args{
+                "--log-append", "--game", Common::FS::PathToUTF8String(launch_file)};
+            if (p_game_folder) {
+                restart_args.insert(restart_args.end(),
+                                    {"--override-root", Common::FS::PathToUTF8String(*p_game_folder)});
+            }
+            if (FileSys::MntPoints::ignore_game_patches) {
+                restart_args.push_back("--ignore-game-patch");
+            }
+            if (!MemoryPatcher::patch_file.empty()) {
+                restart_args.insert(restart_args.end(), {"--patch", MemoryPatcher::patch_file});
+            }
+            if (waitForDebuggerBeforeRun) {
+                restart_args.push_back("--wait-for-debugger");
+            }
+            for (const auto& [path, guest] : mounts) {
+                restart_args.insert(restart_args.end(),
+                                    {"--mount", Common::FS::PathToUTF8String(path), guest});
+            }
+            for (const auto& env : env_vars) {
+                restart_args.insert(restart_args.end(), {"--env", env});
+            }
+            if (!restart_guest_args.empty()) {
+                restart_args.push_back("--");
+                restart_args.insert(restart_args.end(), restart_guest_args.begin(),
+                                    restart_guest_args.end());
+            }
+            Relaunch(std::move(restart_args));
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Restart failed",
+                                     "NHL 24 could not start a new process. See the log for details.",
+                                     window->GetSDLWindow());
+        }
     }
 
     std::quick_exit(0);
@@ -813,45 +849,62 @@ void Emulator::Restart(std::filesystem::path eboot_path,
     Relaunch(std::move(args));
 }
 
-[[noreturn]] void Emulator::Relaunch(std::vector<std::string> args) {
+void Emulator::Relaunch(std::vector<std::string> args) {
     const auto guest_args = std::find(args.begin(), args.end(), "--");
     args.insert(guest_args, {"--wait-for-pid", std::to_string(Debugger::GetCurrentPid())});
 
     LOG_INFO(Common, "Relaunching the emulator with args: {}", fmt::join(args, " "));
-    Libraries::Np::NpHandler::GetInstance().Shutdown();
-    Common::Log::Shutdown();
-
     auto& ipc = IPC::Instance();
 
     if (ipc.IsEnabled()) {
+        Libraries::Np::NpHandler::GetInstance().Shutdown();
+        Common::Log::Shutdown();
         ipc.SendRestart(args);
         while (true) {
             std::this_thread::sleep_for(std::chrono::minutes(1));
         }
     }
 #if defined(_WIN32)
-    std::wstring cmdline;
-    // Emulator executable
-    const auto executable = Common::UTF8ToUTF16W(executableName);
-    cmdline += L"\"";
-    cmdline += executable;
-    cmdline += L"\"";
-    for (const auto& arg : args) {
-        cmdline += L" \"";
-        cmdline += Common::UTF8ToUTF16W(arg);
-        cmdline += L"\"";
+    std::wstring executable(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, executable.data(),
+                                           static_cast<DWORD>(executable.size()));
+    if (length == 0 || length == executable.size()) {
+        LOG_ERROR(Common, "Could not resolve the emulator executable: {}", GetLastError());
+        return;
     }
-    cmdline += L'\0';
+    executable.resize(length);
+
+    std::wstring cmdline;
+    const auto append_arg = [&cmdline](std::wstring_view arg) {
+        cmdline += L'"';
+        size_t backslashes = 0;
+        for (const wchar_t ch : arg) {
+            if (ch == L'\\') {
+                ++backslashes;
+                continue;
+            }
+            cmdline.append(ch == L'"' ? backslashes * 2 + 1 : backslashes, L'\\');
+            cmdline += ch;
+            backslashes = 0;
+        }
+        cmdline.append(backslashes * 2, L'\\');
+        cmdline += L'"';
+    };
+    append_arg(executable);
+    for (const auto& arg : args) {
+        cmdline += L' ';
+        append_arg(Common::UTF8ToUTF16W(arg));
+    }
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    bool success = CreateProcessW(executable.c_str(), cmdline.data(), nullptr, nullptr, TRUE, 0,
+    bool success = CreateProcessW(executable.c_str(), cmdline.data(), nullptr, nullptr, FALSE, 0,
                                   nullptr, nullptr, &si, &pi);
 
     if (!success) {
-        std::cerr << "Failed to restart game: {}" << GetLastError() << std::endl;
-        std::quick_exit(1);
+        LOG_ERROR(Common, "Could not start the emulator process: {}", GetLastError());
+        return;
     }
 
     CloseHandle(pi.hProcess);
@@ -874,11 +927,14 @@ void Emulator::Restart(std::filesystem::path eboot_path,
         std::cerr << "Failed to restart game: execvp failed" << std::endl;
         std::quick_exit(1);
     } else if (pid < 0) {
-        std::cerr << "Failed to restart game: fork failed" << std::endl;
-        std::quick_exit(1);
+        LOG_ERROR(Common, "Failed to restart game: fork failed");
+        return;
     }
 #endif
 
+    Shutdown();
+    Libraries::Np::NpHandler::GetInstance().Shutdown();
+    Common::Log::Shutdown();
     std::quick_exit(0);
 }
 

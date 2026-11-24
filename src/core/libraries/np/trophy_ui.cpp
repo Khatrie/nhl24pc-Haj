@@ -209,16 +209,16 @@ void TrophyUI::Draw() {
         start_y = 50 * AdjustHeight;
         final_pos_x = 20 * AdjustWidth;
         final_pos_y = start_y;
-    } else if (side == "right") {
-        start_x = io.DisplaySize.x;
-        start_y = 50 * AdjustHeight;
-        final_pos_x = io.DisplaySize.x - window_size.x - 20 * AdjustWidth;
-        final_pos_y = start_y;
     } else if (side == "bottom") {
         start_x = (io.DisplaySize.x - window_size.x) * 0.5f;
         start_y = io.DisplaySize.y;
         final_pos_x = start_x;
         final_pos_y = io.DisplaySize.y - window_size.y - 20 * AdjustHeight;
+    } else {
+        start_x = io.DisplaySize.x;
+        start_y = 20 * AdjustHeight;
+        final_pos_x = io.DisplaySize.x - window_size.x - 20 * AdjustWidth;
+        final_pos_y = start_y;
     }
 
     ImVec2 current_pos = ImVec2(start_x + (final_pos_x - start_x) * progress,

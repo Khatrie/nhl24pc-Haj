@@ -4,6 +4,9 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Implemented enhancements
 
+- Exact texture-cache lookups now check the guest address bucket first and scan the full region on a miss. Overlap resolution, image refreshes, and readback behavior are preserved.
+- Diagnostic launches offer an F1 timing-only mode by default. It records a frame marker without a screenshot, draw log, or GPU image dump. Full capture is still available in the same tab.
+
 - Added EU `CUSA37934` package detection and region-specific save lookup alongside US `CUSA37933`.
 - Defaulted GPU readbacks to Relaxed to address black-ice artifacts when readbacks are disabled.
 - Moved texture-cache cleanup during unmap to the GPU command thread. Added render-target resizing at reused guest addresses, bounded image copies to shared extents, preserved GPU-written subresources, and prevented stale GPU copies from overwriting newer CPU data. Mip and layer capacity are checked independently.
@@ -11,7 +14,15 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 - Reused Windows waitable timers per thread, with a fallback when high-resolution timer creation is unavailable.
 - Rethemed the launcher and added English controller labels, graphics presets with preview and restore, separate Vulkan driver and shader cache sizes, one-click diagnostic play, an FPS overlay toggle, and log and capture shortcuts. Launches pass the game path explicitly so the FPS flag works.
 - Added the opt-in **Smooth menus & cutscenes** toggle. It lets VideoOut present on every vblank, up to the configured cap and frame availability.
-- Added Menu + View (Start + Select) to open a translucent NHL settings overlay at the top left, up to 560 × 420 pixels. The in-game view shows General, Graphics, and Input. Frame-cap and DLSS changes are labeled as restart-required.
+- Added Menu + View (Start + Select) to open a resizable, translucent NHL settings overlay with a Sabres-inspired theme. It starts near the top left. Apply & save updates FSR, RCAS, and flip cadence during play. Display mode, present mode, HDR, frame cap, and DLSS are labeled as restart-required.
+- Added a read-only Trophies tab with divided rows, centered grade icons, and distinct earned and locked labels. It reads extracted metadata and local earned state for the default emulated user. Locked hidden trophy names and descriptions stay hidden. The in-game overlay uses square corners and layered transparency, with a session text-size slider in General.
+- The overlay has a live FPS toggle and exposes output dimensions, PS4 Pro mode, readbacks, and the driver cache. Applying startup-only changes prompts for a restart after saving and uses the existing emulator relaunch path.
+- Overlay text sizing now applies to the parent window and child content. The in-game category row shares controller focus with the settings instead of using a separate clipped child panel.
+- The overlay is freely movable and resizable with docking disabled. The Trophies tab uses focusable rows for controller navigation. It shows Platinum prerequisite progress and recognizes numeric completion and collection goals. Partial counts are marked unavailable when NHL does not report them.
+- Trophy unlocks use the existing in-game notification queue, with the default toast positioned in the top-right corner.
+- The FPS counter preserves settings focus when shown. The restart and save-error prompts have default controller selections.
+- The launcher can rename the player 1 local profile without changing its user ID, saves, trophies, or ShadNet account settings.
+- Restart now starts the replacement process before shutdown and reuses the original game path, mounts, and patch selection. If process creation fails on Windows, the game stays open and reports the error.
 
 ## Architectural decisions
 
@@ -22,6 +33,12 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 - Build with the repository scripts and run `tools/make_release.ps1` to stage release output. Verify the deployed executables against the build outputs and preserve local game data, saves, and settings.
 
 ## Known bugs and bottlenecks
+
+- **November 24 marker-only trace after the lookup change:** Median stayed at 16.69 ms and session p99 improved from 49.99 to 33.53 ms. F1 generated no capture files, so the changed capture mode and different session length prevent attributing the improvement to the lookup change alone. An 83.4 ms frame before marker 2 refreshed about 207 MiB of textures and waited 13.4 ms on readbacks. The largest loading hitch was 400 ms with about 573 MiB of texture refreshes, 155 image creations, 108 expansions, and under 1 ms of readback wait. No shaders or pipelines compiled in this run.
+
+- **November 24 follow-up faceoff trace:** The same Pittsburgh–Buffalo matchup recorded 16.70 ms median and 49.99 ms p99 across the 116.7-second run, with about 17 ms of total shader and pipeline compilation. The prior half-second compile spike did not recur. The largest uncaptured loading hitch was 366 ms with 131 images created, 94 expansions, about 503 MiB of texture refreshes, and zero readback or compile wait. An uncaptured 83 ms frame approaching the opening drop refreshed about 240 MiB of textures. The 150 ms frame at the drop came immediately after an F1 dump request and is unsuitable as a clean baseline. The command processor stayed close to one logical core before the drop. Prioritize profiling texture-cache allocation and expansion during transitions and separate marker-only timing from full capture overhead.
+
+- **November 24 EU faceoff trace:** The 82.7-second run had a 16.69 ms median and 50.05 ms p99 across loading, pregame presentation, and faceoff. Screenshots place F1 markers 2–4 at the anthem, 5 at the EA Sports transition, and 6–7 at the opening faceoff. The 533 ms loading spike recorded about 638 MiB of texture refreshes with zero compile or readback time. The 500 ms pre-faceoff spike recorded 340 ms of shader and pipeline compilation, about 227 MiB of texture refreshes, and 10.5 ms of readback wait. The GPU command processor used 93–99% of one logical core in most anthem samples. Several large spikes immediately after F1 overlap diagnostic draw and image dumps. Add a marker-only timing mode and compare repeated warmed-cache runs before changing readback behavior.
 
 - **Intermittent Be a Pro flicker:** The EU 1.00 clip showed the 3D conversation background alternating between the expected scene and a red blur while the dialogue UI remained intact. The raw dump caught a good frame. The renderer fixes address concrete bugs, but their effect on this symptom is unverified.
 - **Compilation and scene transitions:** A diagnostic run recorded a 1.83-second frame with 152 pipeline builds and a 700 ms frame with roughly 329 MiB of image uploads during a scene change. These are observed hotspots. Compare the same sequence with a warmed cache.
@@ -49,8 +66,10 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Pending development
 
+- EU trophy metadata loads locally. The game archive extracted 59 files for `NPWR34955_00`, including 51 trophy definitions. Verify a real in-game unlock persists across restarts before adding a launcher trophy view. Keep local keys and extracted game metadata out of version control.
 - Verify the experimental build in EU and US gameplay, especially Be a Pro conversations, faceoffs, replays, and cutscenes. Compare the smoother menu toggle on and off for frame delivery and audio sync.
 - Verify Menu + View on a physical controller, gamepad navigation, overlay readability at smaller window sizes, and applying and saving the added settings.
+- Verify an overlay-triggered restart preserves the game path, patch selection, saved graphics settings, and diagnostic environment in a real session.
 - Benchmark repeated warmed-cache runs against the main checkpoint. Compare p99 frame time and command-processor CPU time before attributing gains to binding, descriptor, or timer changes.
 - Profile the command processor with Windows CPU sampling. Collect wait stacks if a long unexplained pause recurs. If graphics corruption recurs, capture a bad frame and compare the scene before and after UI composition.
 - Investigate why the Vulkan driver cache stays small and evaluate a safe save point after gameplay. Keep the existing shader and pipeline data intact during comparisons.

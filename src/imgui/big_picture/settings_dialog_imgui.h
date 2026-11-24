@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include <array>
 #include <functional>
 #include <map>
+#include <optional>
 #include <variant>
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -34,7 +36,7 @@ private:
         Experimental,
     };
 
-    void SaveSettings(std::string profile);
+    bool SaveSettings(std::string profile);
     void LoadSettings(std::string profile);
     void SaveInstallDirs();
 
@@ -44,6 +46,7 @@ private:
 
     void DrawMainContent(bool* open, const std::function<void()>& applySettings);
     void DrawSettingsTable(SettingsCategory);
+    void DrawGameTrophies();
     void DrawProfileSelector();
     void DrawGameFolderManager();
     void DrawCategoryTabs();
@@ -65,6 +68,16 @@ private:
 
     std::string runningGameSerial = "";
     bool isGameRunning = false;
+    struct TrophyEntry {
+        std::string name;
+        std::string description;
+        bool earned;
+        char grade;
+        int progress{};
+        int target{};
+    };
+    std::optional<std::vector<TrophyEntry>> gameTrophies;
+    std::array<ImGui::RefCountedTexture, 4> trophyGradeIcons;
     bool closeOnSave = false;
     int deleteProfileIndex = -1;
 
@@ -125,6 +138,7 @@ private:
     int consoleLanguageSetting;
     int volumeSetting;
     bool showSplashSetting;
+    bool showFpsSetting;
     int audioBackendSetting;
 
     // Graphics tab

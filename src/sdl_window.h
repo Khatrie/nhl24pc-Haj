@@ -64,6 +64,12 @@ public:
         return is_open;
     }
 
+    bool ConsumeRestartRequest() {
+        const bool requested = restart_requested;
+        restart_requested = false;
+        return requested;
+    }
+
     [[nodiscard]] SDL_Window* GetSDLWindow() const {
         return window;
     }
@@ -93,6 +99,7 @@ private:
     SDL_Window* window{};
     bool is_shown{};
     bool is_open{true};
+    bool restart_requested{};
 };
 
 void SetWindowIcon(SDL_Window* window, const std::vector<u8>& png);

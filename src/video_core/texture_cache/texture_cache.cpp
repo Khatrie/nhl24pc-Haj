@@ -2088,30 +2088,25 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
     ASSERT(info.guest_address != 0);
 
-    SmallVector<ImageId, 8> image_ids;
-    ForEachImageInRegion(info.guest_address, info.guest_size,
-                         [&](ImageId image_id, Image& image) { image_ids.push_back(image_id); });
-
     ImageId image_id{};
 
     // Check for a perfect match first
-    for (const auto& cache_id : image_ids) {
-        auto& cache_image = slot_images[cache_id];
+    ForEachImageWithAddress(info.guest_address, [&](ImageId cache_id, Image& cache_image) {
         if (cache_image.info.guest_address != info.guest_address) {
-            continue;
+            return;
         }
         if (cache_image.info.guest_size != info.guest_size) {
-            continue;
+            return;
         }
         if (cache_image.info.size != info.size) {
-            continue;
+            return;
         }
         if (!IsVulkanFormatCompatible(cache_image.info.pixel_format, info.pixel_format) ||
             (cache_image.info.type != info.type && info.size != Extent3D{1, 1, 1})) {
-            continue;
+            return;
         }
         if (exact_fmt && info.pixel_format != cache_image.info.pixel_format) {
-            continue;
+            return;
         }
         if (image_id) {
             // nhlport: two cached images match the same address and size (aliases that were
@@ -2133,12 +2128,15 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             }
         }
         image_id = cache_id;
-    }
+    });
 
     // Try to resolve overlaps (if any)
     int view_mip{-1};
     int view_slice{-1};
     if (!image_id) {
+        SmallVector<ImageId, 8> image_ids;
+        ForEachImageInRegion(info.guest_address, info.guest_size,
+                             [&](ImageId id, Image&) { image_ids.push_back(id); });
         for (const auto& cache_id : image_ids) {
             view_mip = -1;
             view_slice = -1;

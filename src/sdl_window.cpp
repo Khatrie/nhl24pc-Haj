@@ -281,6 +281,9 @@ void WindowSDL::WaitEvent() {
     case SDL_EVENT_QUIT:
         is_open = false;
         break;
+    case SDL_EVENT_RESTART_GAME:
+        restart_requested = true;
+        break;
     case SDL_EVENT_QUIT_DIALOG:
         Overlay::ToggleQuitWindow();
         break;

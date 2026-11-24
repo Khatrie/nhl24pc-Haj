@@ -1180,7 +1180,7 @@ void Event(const char* category, std::string message) {
     WriteStamped(s, category, message);
 }
 
-void Marker(std::string note) {
+static void MarkFrame(std::string note, bool screenshot) {
     State& s = S();
     if (!s.enabled.load(std::memory_order_relaxed)) {
         return;
@@ -1194,10 +1194,16 @@ void Marker(std::string note) {
         ++s.marker_count;
     }
     s.marker_flag.store(1, std::memory_order_relaxed);
-    s.marker_shots.fetch_add(1, std::memory_order_relaxed);
+    if (screenshot) {
+        s.marker_shots.fetch_add(1, std::memory_order_relaxed);
+    }
     WriteStamped(s, "marker",
                  fmt::format("#{} at frame {} (gpu frame {}): {}", s.marker_count, frame,
                              VideoCore::Perf::gpu_frame.load(std::memory_order_relaxed), note));
+}
+
+void Marker(std::string note) {
+    MarkFrame(std::move(note), true);
 }
 
 static const std::vector<u64>& CaptureDispatchHashes() {
@@ -1236,6 +1242,11 @@ bool CaptureMatchesDispatch(u64 pgm_hash) {
 void ArmCapture(std::string note) {
     State& s = S();
     if (!s.enabled.load(std::memory_order_relaxed)) {
+        return;
+    }
+    if (const char* mode = std::getenv("NHLPORT_DIAG_MARKER_ONLY");
+        mode && std::string_view(mode) == "1") {
+        MarkFrame(std::move(note), false);
         return;
     }
     Marker(std::move(note));

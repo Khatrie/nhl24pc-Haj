@@ -30,6 +30,7 @@ namespace Overlay {
 
 void ToggleSimpleFps();
 void SetSimpleFps(bool enabled);
+bool IsSimpleFpsEnabled();
 void ToggleQuitWindow();
 void ShowVolume();
 

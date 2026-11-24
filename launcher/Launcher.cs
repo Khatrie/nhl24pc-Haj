@@ -12,6 +12,7 @@
 // PKG installation runs "nhl24.exe --extract-pkg <file> --extract-to <game folder>" and follows
 // its "progress" lines (see nhlport/src/core/file_format/pkg_extract.h).
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -45,6 +46,8 @@ namespace NhlPort
             { "controls_default", new[] { "Ovládanie: predvolené klávesy, gamepad 1:1 (upraviť v Rozšírenom)", "Controls: default keys, gamepad 1:1 (edit in Advanced)" } },
             { "controls_custom", new[] { "Ovládanie: vlastné klávesy, gamepad 1:1", "Controls: custom keys, gamepad 1:1" } },
             { "open_folder", new[] { "Otvoriť priečinok", "Open folder" } },
+            { "profile_name", new[] { "Názov miestneho profilu", "Local profile name" } },
+            { "profile_name_invalid", new[] { "Zadajte názov profilu s dĺžkou 1 až 16 bajtov UTF-8 bez riadiacich znakov.", "Enter a profile name of 1 to 16 UTF-8 bytes without control characters." } },
             { "hint", new[] { "Gamepad (Xbox / DualShock) funguje automaticky; klávesy sa dajú zmeniť v Rozšírenom. Diagnostika hry je vypnutá (zapne ju premenná NHLPORT_DIAG=1).", "A gamepad (Xbox / DualShock) works automatically; keys can be changed in Advanced. Game diagnostics are off (NHLPORT_DIAG=1 enables them)." } },
             { "game_folder", new[] { "Priečinok hry", "Game folder" } },
             { "browse", new[] { "Prehľadávať…", "Browse…" } },
@@ -119,7 +122,8 @@ namespace NhlPort
             { "tab_controls", new[] { "Ovládanie", "Controls" } },
             { "tab_diagnostics", new[] { "Diagnostika", "Diagnostics" } },
             { "diag_title", new[] { "Diagnostika hry", "Game diagnostics" } },
-            { "diag_description", new[] { "Spusti jednu reláciu s podrobným záznamom. Stlačením F1 v hre označíš problém a zaznamenáš nasledujúce snímky.", "Start one session with detailed logging. Press F1 in-game to mark an issue and trace the following frames." } },
+            { "diag_description", new[] { "Spustí hru s diagnostikou. Stlačte F1 pri spomalení.", "Start the game with diagnostics. Press F1 when you notice a slowdown." } },
+            { "diag_marker_only", new[] { "F1 iba označí čas (bez snímok a výpisov GPU)", "F1 marks timing only (no screenshots or GPU dumps)" } },
             { "diag_play", new[] { "Hrať s diagnostikou", "Play with diagnostics" } },
             { "diag_logs", new[] { "Otvoriť záznamy", "Open logs" } },
             { "diag_captures", new[] { "Otvoriť snímky", "Open captures" } },
@@ -527,6 +531,7 @@ namespace NhlPort
         static readonly string[] SupportedTitleIds = { "CUSA37933", "CUSA37934" };
         readonly string baseDir;
         readonly string configPath;
+        readonly string usersPath;
         readonly string inputPath;
         readonly string gamePathFile;
         readonly string gameExe;
@@ -542,6 +547,9 @@ namespace NhlPort
         GlassPanel readyPanel, quickPanel, progressPanel;
         CheckRow rowGame, rowSaves, rowGpu, rowControls;
         TextBox gameFolderBox;
+        TextBox profileNameBox;
+        const string DefaultProfileName = "shadPS4";
+        string savedProfileName;
         ComboBox outputBox, displayModeBox, upscalerBox, langBox;
         GlassSlider sharpBar;
         TransparentLabel sharpValue, pkgReqLabel, summaryLabel, versionLabel, gameVersionLabel, statusLabel;
@@ -572,6 +580,7 @@ namespace NhlPort
         CheckBox vsyncBox;
         CheckBox neoBox;
         CheckBox fpsOverlayBox;
+        CheckBox diagMarkerOnlyBox;
         Process diagnosticGame;
         CheckBox stretchBox;
         CheckBox fsrBox;
@@ -596,6 +605,7 @@ namespace NhlPort
             startAdvanced = advanced;
             baseDir = AppDomain.CurrentDomain.BaseDirectory;
             configPath = Path.Combine(baseDir, "user", "config.json");
+            usersPath = Path.Combine(baseDir, "user", "users.json");
             inputPath = Path.Combine(baseDir, "user", "input_config", "default.ini");
             gamePathFile = Path.Combine(baseDir, "user", "game_path.txt");
             gameExe = Path.Combine(baseDir, "nhl24.exe");
@@ -605,6 +615,7 @@ namespace NhlPort
             DefineActions();
             LoadBindings();
             LoadConfig();
+            savedProfileName = ReadProfileName();
             Loc.Lang = Convert.ToInt32(LauncherValue("language", 1)); // English until another language is saved
 
             try
@@ -968,8 +979,83 @@ namespace NhlPort
             return fallback;
         }
 
+        static Dictionary<string, object> GetPrimaryProfile(Dictionary<string, object> document)
+        {
+            var users = (Dictionary<string, object>)document["Users"];
+            foreach (Dictionary<string, object> profile in (IList)users["user"])
+            {
+                object index;
+                if (profile.TryGetValue("player_index", out index) && Convert.ToInt32(index) == 1)
+                    return profile;
+            }
+            throw new InvalidDataException("No local profile is assigned to player 1.");
+        }
+
+        string ReadProfileName()
+        {
+            if (File.Exists(usersPath))
+            {
+                try
+                {
+                    var serializer = new JavaScriptSerializer();
+                    var document = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(usersPath));
+                    return Convert.ToString(GetPrimaryProfile(document)["user_name"]);
+                }
+                catch (Exception) { }
+            }
+            return DefaultProfileName;
+        }
+
+        void SaveProfileName()
+        {
+            string name = profileNameBox.Text.Trim();
+            if (name == savedProfileName) return;
+
+            var encoding = new UTF8Encoding(false, true);
+            if (name.Length == 0 || encoding.GetByteCount(name) > 16 || Array.Exists(name.ToCharArray(), char.IsControl))
+                throw new InvalidDataException(Loc.T("profile_name_invalid"));
+
+            var serializer = new JavaScriptSerializer();
+            bool exists = File.Exists(usersPath);
+            Dictionary<string, object> document;
+            if (exists)
+            {
+                document = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(usersPath));
+            }
+            else
+            {
+                var profiles = new Dictionary<string, object>[4];
+                for (int i = 0; i < profiles.Length; i++)
+                {
+                    profiles[i] = new Dictionary<string, object> {
+                        { "user_id", 1000 + i }, { "player_index", i + 1 }, { "user_color", i + 1 },
+                        { "user_name", i == 0 ? DefaultProfileName : DefaultProfileName + "-" + (i + 1) }
+                    };
+                }
+                document = new Dictionary<string, object> {
+                    { "Users", new Dictionary<string, object> { { "user", profiles } } }
+                };
+            }
+            GetPrimaryProfile(document)["user_name"] = name;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(usersPath));
+            string temporaryPath = usersPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporaryPath, PrettyJson(serializer.Serialize(document)), encoding);
+                if (exists) File.Replace(temporaryPath, usersPath, null);
+                else File.Move(temporaryPath, usersPath);
+            }
+            finally
+            {
+                File.Delete(temporaryPath);
+            }
+            savedProfileName = name;
+        }
+
         void SaveConfig()
         {
+            SaveProfileName();
             // the simple view and the advanced tab edit the same values; the one shown last wins
             var parts = resolutionBox.Text.Split('x');
             int w = 1280, h = 720;
@@ -1016,6 +1102,7 @@ namespace NhlPort
             if (ignoreFlipRateBox != null) Gpu["ignore_flip_rate"] = ignoreFlipRateBox.Checked;
             Launcher["language"] = Loc.Lang;
             Launcher["show_fps"] = fpsOverlayBox != null && fpsOverlayBox.Checked;
+            Launcher["diag_marker_only"] = diagMarkerOnlyBox.Checked;
             // Sharpening source: 0 = built-in RCAS pass (ReShade disabled for the game), 1 = ReShade
             // (the built-in sharpness is written as 0 so the two never stack; the slider value is kept).
             Launcher["sharpen_mode"] = sharpenModeBox.SelectedIndex;
@@ -1121,6 +1208,11 @@ namespace NhlPort
             openBtn.Click += delegate { OpenFolder(); };
             readyPanel.Controls.Add(openBtn);
             readyPanel.Controls.Add(new TransparentLabel { Left = 28, Top = 380, Width = 390, Height = 60, Font = Theme.Small, ForeColor = Color.FromArgb(200, 210, 225), Text = Loc.T("hint") });
+            readyPanel.Controls.Add(new TransparentLabel { Left = 28, Top = 443, Width = 380, Height = 20, Font = Theme.Label, Text = Loc.T("profile_name") });
+            profileNameBox = new TextBox { Left = 28, Top = 465, Width = 285, MaxLength = 16,
+                Text = savedProfileName, AccessibleName = Loc.T("profile_name") };
+            Theme.Style(profileNameBox);
+            readyPanel.Controls.Add(profileNameBox);
 
             // ---- quick settings
             quickPanel = new GlassPanel { Left = 490, Top = 0, Width = 660, Height = 515 };
@@ -2177,14 +2269,17 @@ namespace NhlPort
             fpsOverlayBox = new CheckBox { Left = 24, Top = 112, Width = 400, Height = 28,
                 Font = Theme.Body, ForeColor = Color.White, Text = Loc.T("diag_fps"),
                 Checked = ToBool(LauncherValue("show_fps", false), false) };
-            var play = new FlatButton { Left = 24, Top = 160, Width = 220, Height = 36, Text = Loc.T("diag_play") };
+            diagMarkerOnlyBox = new CheckBox { Left = 24, Top = 145, Width = 760, Height = 28,
+                Font = Theme.Body, ForeColor = Color.White, Text = Loc.T("diag_marker_only"),
+                Checked = ToBool(LauncherValue("diag_marker_only", true), true) };
+            var play = new FlatButton { Left = 24, Top = 190, Width = 220, Height = 36, Text = Loc.T("diag_play") };
             play.SetAccent(true);
             play.Click += delegate { if (SaveAll()) RunGame(true); };
-            var logs = new FlatButton { Left = 260, Top = 160, Width = 160, Height = 36, Text = Loc.T("diag_logs") };
+            var logs = new FlatButton { Left = 260, Top = 190, Width = 160, Height = 36, Text = Loc.T("diag_logs") };
             logs.Click += delegate { OpenDiagnosticFolder("log"); };
-            var captures = new FlatButton { Left = 436, Top = 160, Width = 160, Height = 36, Text = Loc.T("diag_captures") };
+            var captures = new FlatButton { Left = 436, Top = 190, Width = 160, Height = 36, Text = Loc.T("diag_captures") };
             captures.Click += delegate { OpenDiagnosticFolder("captures"); };
-            page.Controls.AddRange(new Control[] { title, description, fpsOverlayBox, play, logs, captures });
+            page.Controls.AddRange(new Control[] { title, description, fpsOverlayBox, diagMarkerOnlyBox, play, logs, captures });
             return page;
         }
 
@@ -2230,7 +2325,10 @@ namespace NhlPort
             if (File.Exists(Path.Combine(baseDir, "user", "patches", "nhl24.xml")))
                 psi.Arguments += " -p nhl24.xml";
             if (diagnostics)
+            {
                 psi.EnvironmentVariables["NHLPORT_DIAG"] = "1";
+                psi.EnvironmentVariables["NHLPORT_DIAG_MARKER_ONLY"] = diagMarkerOnlyBox.Checked ? "1" : "0";
+            }
             if (fpsOverlayBox != null && fpsOverlayBox.Checked)
                 psi.Arguments += " --show-fps";
             // Built-in sharpening: switch off the ReShade Vulkan layer for the game only (the layer's own

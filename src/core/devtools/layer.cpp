@@ -422,7 +422,8 @@ void L::Draw() {
     if (show_simple_fps) {
         if (Begin("Video Info", nullptr,
                   ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration |
-                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDocking)) {
+                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDocking |
+                      ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (const float width = GetIO().DisplaySize.x; width != fps_anchor_width) {
                 visibility_toggled |= GetWindowPos().x + GetCurrentWindowRead()->SizeFull.x >=
                                       fps_anchor_width - 1.0f;
@@ -530,8 +531,14 @@ void ToggleSimpleFps() {
 }
 
 void SetSimpleFps(bool enabled) {
-    show_simple_fps = enabled;
-    visibility_toggled = true;
+    if (show_simple_fps != enabled) {
+        show_simple_fps = enabled;
+        visibility_toggled = true;
+    }
+}
+
+bool IsSimpleFpsEnabled() {
+    return show_simple_fps;
 }
 
 void ToggleQuitWindow() {
