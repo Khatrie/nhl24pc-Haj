@@ -4,6 +4,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Implemented enhancements
 
+- Retain up to 64 MiB of otherwise-expired upload staging buffers for up to 1,800 renderer ticks. The policy applies to host upload staging and preserves GPU completion checks. Set `NHLPORT_WARM_UPLOAD_STAGING=0` to compare with the previous trimming policy. The frame CSV reports requested bytes from new and reused upload buffers, retained bytes, and CPU-side time inside `vmaCreateImage`. Isolated startup runs emitted these counters in both modes and neither retained expired blocks. The arena effect is unmeasured. The experiment was informed by [bbport's streaming measurements](https://github.com/deadinside28/bloodborne_pc/blob/master/docs/parallel_gpu.md#streaming-stutter-bb_frame_stats-stall-lines).
+
 - Texture construction caches successful Vulkan sample-count capability queries per physical device instance, keyed by format, image type, tiling, usage, and creation flags. Unsupported format handling and fallback are preserved.
 
 - The launcher offers persistent full-session performance logging on ordinary Play. It writes frame, thread, and stutter data automatically and uses timing-only F1 behavior. The dedicated diagnostic launch still offers full captures.
@@ -87,6 +89,10 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 | `PROJECT_STATUS.md` | Branch, implementation, verification, and outstanding work. |
 
 ## Pending development
+
+- Compare cold and warm upload staging. [bbport's streaming trace](https://github.com/deadinside28/bloodborne_pc/blob/master/docs/parallel_gpu.md#streaming-stutter-bb_frame_stats-stall-lines) found CPU first-touch costs when staging pages were recreated between bursts. The latest NHL arena hitch recorded about 151,000 process-wide page faults, which cannot identify the faulting allocation. Measure new versus recycled upload blocks and test bounded retention before moving copies onto workers.
+- Check [shadPS4 #5761](https://github.com/shadps4-emu/shadPS4/pull/5761) against NHL equal-address texture requests with the same layout and different guest byte sizes. Track matches before backporting. The fix addresses a one-mip, one-layer case and the observed mip-growth chains require different handling.
+- Evaluate [shadPS4 #5711](https://github.com/shadps4-emu/shadPS4/pull/5711) separately for Windows startup commit pressure. The author tested it on NHL 19 with unchanged frame rate. Keep any NHL 24 trial isolated from release builds until mapping and startup behavior are verified.
 
 - EU trophy metadata loads locally. The game archive extracted 59 files for `NPWR34955_00`, including 51 trophy definitions. Verify a real in-game unlock persists across restarts before adding a launcher trophy view. Keep local keys and extracted game metadata out of version control.
 - Verify the experimental build in EU and US gameplay, especially Be a Pro conversations, faceoffs, replays, and cutscenes. Compare the smoother menu toggle on and off for frame delivery and audio sync.

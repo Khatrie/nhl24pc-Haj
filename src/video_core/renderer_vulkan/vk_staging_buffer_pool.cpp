@@ -3,9 +3,12 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
+#include <string_view>
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/diag_log.h"
 #include "common/types.h"
 #include "core/devtools/widget/gpu_memory.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -22,6 +25,23 @@ constexpr u64 RING_IDLE_FRAMES = 300;
 constexpr u64 LARGE_IDLE_FRAMES = 120;
 constexpr u64 LARGE_MIN_GRANULARITY = 64_KB;
 constexpr u64 BLOCK_SIZE = 16_MB;
+constexpr u64 UPLOAD_RETENTION_BYTES = 64_MB;
+constexpr u64 UPLOAD_RETENTION_FRAMES = 1800;
+
+bool RetainUploadBuffer(u64 idle_frames, u64 bytes, u64& budget) {
+    if (idle_frames >= UPLOAD_RETENTION_FRAMES || bytes > budget) {
+        return false;
+    }
+    budget -= bytes;
+    return true;
+}
+
+void RecordStagingRequest(MemoryType type, u64 bytes, bool reused) {
+    if (type == MemoryType::HostUncached && Diag::Enabled()) {
+        auto& counter = reused ? Diag::C::staging_reused_bytes : Diag::C::staging_new_bytes;
+        counter.fetch_add(bytes, std::memory_order_relaxed);
+    }
+}
 
 u64 RoundAllocationSize(u64 size) {
     const u64 step = std::max(std::bit_floor(size) / 4, LARGE_MIN_GRANULARITY);
@@ -48,6 +68,7 @@ StagingBufferRef StagingBufferPool::RequestFromRing(Ring& ring, u64 size, u64 al
                                                     MemoryType type, bool unsynchronized) {
     Block* best{};
     u64 best_offset{};
+    bool reused = true;
     for (size_t i = 0; i < ring.blocks.size(); ++i) {
         const size_t index = (ring.current + i) % ring.blocks.size();
         Block* block = &ring.blocks[index];
@@ -64,6 +85,7 @@ StagingBufferRef StagingBufferPool::RequestFromRing(Ring& ring, u64 size, u64 al
             best = &ring.blocks[(ring.current + 1) % ring.blocks.size()];
             best_offset = 0;
         } else {
+            reused = false;
             best = &ring.blocks.emplace_back(Block{
                 .buffer = std::make_unique<VideoCore::StreamBuffer>(instance, scheduler, type,
                                                                     BLOCK_SIZE),
@@ -74,6 +96,7 @@ StagingBufferRef StagingBufferPool::RequestFromRing(Ring& ring, u64 size, u64 al
         }
     }
 
+    RecordStagingRequest(type, size, reused);
     auto& buffer = *best->buffer;
     best->last_used_frame = frame;
 
@@ -106,6 +129,7 @@ StagingBufferRef StagingBufferPool::RequestLarge(u64 size, MemoryType type, bool
         }
     }
 
+    RecordStagingRequest(type, size, best != nullptr);
     if (!best) {
         best = &cache.emplace_back(LargeBuffer{
             .buffer = std::make_unique<VideoCore::Buffer>(instance, 0, RoundAllocationSize(size),
@@ -145,21 +169,31 @@ void StagingBufferPool::FreeDeferred(const StagingBufferRef& ref) {
 
 void StagingBufferPool::TickFrame() {
     ++frame;
-    for (Ring& ring : rings) {
-        TrimRing(ring);
-    }
-    for (auto& cache : large_caches) {
-        TrimLarge(cache);
+    static const bool retain_upload_staging = [] {
+        const char* value = std::getenv("NHLPORT_WARM_UPLOAD_STAGING");
+        return !value || std::string_view(value) != "0";
+    }();
+    for (size_t i = 0; i < NUM_TYPES; ++i) {
+        u64 budget = retain_upload_staging && i == u32(MemoryType::HostUncached)
+                         ? UPLOAD_RETENTION_BYTES
+                         : 0;
+        TrimLarge(large_caches[i], budget);
+        TrimRing(rings[i], budget);
+        if (i == u32(MemoryType::HostUncached) && Diag::Enabled()) {
+            const u64 retained = retain_upload_staging ? UPLOAD_RETENTION_BYTES - budget : 0;
+            Diag::C::staging_retained_bytes.store(retained, std::memory_order_relaxed);
+        }
     }
     PublishStats();
 }
 
-void StagingBufferPool::TrimRing(Ring& ring) {
+void StagingBufferPool::TrimRing(Ring& ring, u64& retention_budget) {
     auto& blocks = ring.blocks;
     for (size_t i = blocks.size(); i-- > 0;) {
         const Block& block = blocks[i];
-        if (frame - block.last_used_frame < RING_IDLE_FRAMES ||
-            !scheduler.IsFree(block.buffer->LastTick())) {
+        const u64 idle_frames = frame - block.last_used_frame;
+        if (idle_frames < RING_IDLE_FRAMES || !scheduler.IsFree(block.buffer->LastTick()) ||
+            RetainUploadBuffer(idle_frames, block.buffer->SizeBytes(), retention_budget)) {
             continue;
         }
         blocks.erase(blocks.begin() + i);
@@ -174,10 +208,11 @@ void StagingBufferPool::TrimRing(Ring& ring) {
     }
 }
 
-void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache) {
-    std::erase_if(cache, [this](const LargeBuffer& entry) {
-        return !entry.held && frame - entry.last_used_frame >= LARGE_IDLE_FRAMES &&
-               scheduler.IsFree(entry.tick);
+void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache, u64& retention_budget) {
+    std::erase_if(cache, [this, &retention_budget](const LargeBuffer& entry) {
+        const u64 idle_frames = frame - entry.last_used_frame;
+        return !entry.held && idle_frames >= LARGE_IDLE_FRAMES && scheduler.IsFree(entry.tick) &&
+               !RetainUploadBuffer(idle_frames, entry.buffer->SizeBytes(), retention_budget);
     });
 }
 

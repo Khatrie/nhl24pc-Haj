@@ -120,6 +120,7 @@ struct Counters {
     u64 image_alloc_ns, refresh_buffer_ns, refresh_detile_ns, refresh_upload_ns;
     ImageBufferSample expand_source, refresh_source;
     u64 image_construct_ns, expand_construct_ns;
+    u64 vma_image_create_ns, staging_new_bytes, staging_reused_bytes;
 };
 
 /// A compute dispatch kind replaced by an emulator fast path (one entry per kind + shader).
@@ -203,6 +204,9 @@ Counters Snapshot() {
         .refresh_source = load_source(C::tc_refresh_source),
         .image_construct_ns = ld(C::tc_image_construct_ns),
         .expand_construct_ns = ld(C::tc_expand_construct_ns),
+        .vma_image_create_ns = ld(C::vma_image_create_ns),
+        .staging_new_bytes = ld(C::staging_new_bytes),
+        .staging_reused_bytes = ld(C::staging_reused_bytes),
     };
 }
 
@@ -367,7 +371,9 @@ constexpr const char* FramesHeader =
     "expand_copy_cpu_ms,image_alloc_cpu_ms,refresh_buffer_cpu_ms,refresh_detile_cpu_ms,"
     "refresh_upload_cpu_ms,expand_staging_cpu_ms,expand_guest_copy_cpu_ms,expand_flush_cpu_ms,"
     "expand_sync_cpu_ms,refresh_staging_cpu_ms,refresh_guest_copy_cpu_ms,refresh_flush_cpu_ms,"
-    "refresh_sync_cpu_ms,image_construct_cpu_ms,expand_construct_cpu_ms";
+    "refresh_sync_cpu_ms,image_construct_cpu_ms,expand_construct_cpu_ms,"
+    "vma_image_create_cpu_ms,upload_staging_new_bytes,upload_staging_reused_bytes,"
+    "upload_staging_retained_bytes";
 
 #ifdef _WIN32
 u64 FileTimeTo100ns(const FILETIME& ft) {
@@ -1108,7 +1114,7 @@ void Init() {
         "NHLPORT_GPU_CLOCK",   "NHLPORT_READBACK_DRAIN", "NHLPORT_STREAMED",
         "NHLPORT_MIP_MEMO",    "NHLPORT_GPU_INVAL_SMALL", "NHLPORT_META_ERASE",
         "NHLPORT_WRITEDATA_FAULT", "NHLPORT_VTX_KILL",   "NHLPORT_DIAG_FRAMES",
-        "NHLPORT_DIAG_INTERVAL",
+        "NHLPORT_DIAG_INTERVAL", "NHLPORT_WARM_UPLOAD_STAGING",
     };
     std::string env_line;
     for (const char* name : env_names) {
@@ -1679,9 +1685,12 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
         };
         append_source(&Counters::expand_source);
         append_source(&Counters::refresh_source);
-        fmt::format_to(std::back_inserter(row), ",{:.3f},{:.3f}\n",
+        fmt::format_to(std::back_inserter(row), ",{:.3f},{:.3f},{:.3f},{},{},{}\n",
                        double(d(&Counters::image_construct_ns)) / 1e6,
-                       double(d(&Counters::expand_construct_ns)) / 1e6);
+                       double(d(&Counters::expand_construct_ns)) / 1e6,
+                       double(d(&Counters::vma_image_create_ns)) / 1e6,
+                       d(&Counters::staging_new_bytes), d(&Counters::staging_reused_bytes),
+                       C::staging_retained_bytes.load(std::memory_order_relaxed));
         std::scoped_lock lk{s.frame_mutex};
         s.frames_buf += row;
     }
