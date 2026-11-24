@@ -146,19 +146,39 @@ void MemoryManager::SetPrtArea(u32 id, VAddr address, u64 size) {
 }
 
 void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
+    if (size == 0) {
+        return;
+    }
+
+    constexpr u64 page_size = 1ULL << AddressSpace::Traits::PAGE_BITS;
     const auto& backing_pages = impl.BackingPages();
+    const auto backing_for_page = [&backing_pages](u64 page) -> const u8* {
+        const auto* entry = backing_pages.find(page);
+        return entry ? *entry : nullptr;
+    };
+
+    u64 page = virtual_addr / page_size;
+    u64 offset = virtual_addr % page_size;
+    const u8* next_backing = backing_for_page(page);
     while (size) {
-        const u64 page = virtual_addr >> 14;
-        const u64 offset_in_page = virtual_addr % 16_KB;
-        const u64 copy_size = std::min<u64>(16_KB - offset_in_page, size);
-        if (auto* entry = backing_pages.find(page); entry && *entry) {
-            std::memcpy(dest, *entry + offset_in_page, copy_size);
-        } else {
-            std::memset(dest, 0, copy_size);
+        const u8* source = next_backing ? next_backing + offset : nullptr;
+        u64 run_size = std::min(page_size - offset, size);
+        while (run_size < size) {
+            next_backing = backing_for_page(++page);
+            if (next_backing != (source ? source + run_size : nullptr)) {
+                break;
+            }
+            run_size += std::min(page_size, size - run_size);
         }
-        size -= copy_size;
-        virtual_addr += copy_size;
-        dest += copy_size;
+
+        if (source) {
+            std::memcpy(dest, source, run_size);
+        } else {
+            std::memset(dest, 0, run_size);
+        }
+        size -= run_size;
+        dest += run_size;
+        offset = 0;
     }
 }
 

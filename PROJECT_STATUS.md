@@ -4,6 +4,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Implemented enhancements
 
+- Guest-to-staging reads now batch consecutive pages backed by contiguous memory into one copy. Unmapped spans remain zero-filled, and discontiguous or aliased pages still use their individual backing addresses. An isolated check matched the former implementation across 2,503 ranges. In-game timing gains are unmeasured.
+
 - The frame CSV now separates ordinary image allocation and refresh costs from expansion. For each source-buffer path it records staging requests, guest-memory copies, staging flushes, and synchronization of GPU-backed buffers. Synchronization timing includes any copies it performs internally. The source timings are components of the corresponding buffer total.
 
 - Diagnostic runs record CPU-side elapsed time for texture expansion in the frame CSV. The new columns distinguish image allocation and registration, source-buffer preparation, detiling, upload recording, and GPU image-copy recording. These timings describe host work and can include waits within those operations.
@@ -39,6 +41,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 - Build with the repository scripts and run `tools/make_release.ps1` to stage release output. Verify the deployed executables against the build outputs and preserve local game data, saves, and settings.
 
 ## Known bugs and bottlenecks
+
+- **November 24 source-buffer timing trace:** Seven timing markers, 16.68 ms median, and 33.59 ms p99. In the 516 ms loading frame, expansion source-buffer preparation took 167 ms, including 163 ms copying guest memory and 4 ms requesting staging space. Expanded-image allocation and registration took another 142 ms. The near-100 ms hitch before marker 2 recorded 28 ms of ordinary source-buffer preparation (17 ms guest copies and 11 ms synchronization) and 14 ms of ordinary image allocation and registration. Guest-memory copying and image churn recur in the slow frames. Staging allocation is a smaller cost. One subsequent loading frame spent 94 ms waiting on readbacks, so track that stall separately. Investigate whether fully contiguous backing pages can be copied in larger spans while preserving sparse zero-fill and memory coherency.
 
 - **November 24 expansion timing trace:** Eight timing markers, 16.68 ms median, and 33.70 ms p99. The 400 ms loading frame recorded 106 expansions, 147 ms of expansion source-buffer preparation and 131 ms of allocation and registration. Detiling, upload recording, and image-copy recording totaled under 4 ms of host elapsed time. The 116 ms hitch before marker 3 recorded about 341 MiB of texture refreshes but only about 7 ms in the measured expansion phases. Profile source-buffer preparation and ordinary image creation and refresh separately before treating all gameplay hitches as expansion costs.
 
