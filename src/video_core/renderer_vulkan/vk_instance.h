@@ -3,7 +3,10 @@
 
 #pragma once
 
+#include <map>
+#include <mutex>
 #include <span>
+#include <tuple>
 #include <unordered_map>
 
 #include "video_core/renderer_vulkan/vk_platform.h"
@@ -32,6 +35,9 @@ public:
     /// Gets a compatibility format if the format is not supported.
     [[nodiscard]] vk::Format GetSupportedFormat(vk::Format format,
                                                 vk::FormatFeatureFlags2 flags) const;
+    [[nodiscard]] vk::ResultValue<vk::SampleCountFlags>
+    GetImageSampleCounts(vk::Format format, vk::ImageType type, vk::ImageTiling tiling,
+                         vk::ImageUsageFlags usage, vk::ImageCreateFlags flags) const;
 
     /// Returns the Vulkan instance
     vk::Instance GetInstance() const {
@@ -522,6 +528,9 @@ private:
     std::vector<vk::PhysicalDevice> physical_devices;
     std::vector<std::string> available_extensions;
     std::unordered_map<vk::Format, vk::FormatProperties3> format_properties;
+    mutable std::mutex image_sample_counts_mutex;
+    mutable std::map<std::tuple<vk::Format, vk::ImageType, vk::ImageTiling, vk::ImageUsageFlags,
+                               vk::ImageCreateFlags>, vk::SampleCountFlags> image_sample_counts;
     TracyVkCtx profiler_context{};
     u32 queue_family_index{0};
     bool custom_border_color{};

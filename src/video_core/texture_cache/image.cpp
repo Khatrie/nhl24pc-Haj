@@ -154,27 +154,19 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
 
     constexpr auto tiling = vk::ImageTiling::eOptimal;
     const auto supported_format = instance.GetSupportedFormat(info.pixel_format, format_features);
-    const vk::PhysicalDeviceImageFormatInfo2 format_info{
-        .format = supported_format,
-        .type = ConvertImageType(info.type),
-        .tiling = tiling,
-        .usage = usage_flags,
-        .flags = flags,
-    };
-    const auto image_format_properties =
-        instance.GetPhysicalDevice().getImageFormatProperties2(format_info);
-    if (image_format_properties.result == vk::Result::eErrorFormatNotSupported) {
+    const auto image_type = ConvertImageType(info.type);
+    const auto [result, sample_counts] =
+        instance.GetImageSampleCounts(supported_format, image_type, tiling, usage_flags, flags);
+    if (result == vk::Result::eErrorFormatNotSupported) {
         LOG_ERROR(Render_Vulkan, "image format {} type {} is not supported (flags {}, usage {})",
-                  vk::to_string(supported_format), vk::to_string(format_info.type),
-                  vk::to_string(format_info.flags), vk::to_string(format_info.usage));
+                  vk::to_string(supported_format), vk::to_string(image_type),
+                  vk::to_string(flags), vk::to_string(usage_flags));
     }
-    supported_samples = image_format_properties.result == vk::Result::eSuccess
-                            ? image_format_properties.value.imageFormatProperties.sampleCounts
-                            : vk::SampleCountFlagBits::e1;
+    supported_samples = result == vk::Result::eSuccess ? sample_counts : vk::SampleCountFlagBits::e1;
 
     const vk::ImageCreateInfo image_ci = {
         .flags = flags,
-        .imageType = ConvertImageType(info.type),
+        .imageType = image_type,
         .format = supported_format,
         .extent{
             .width = info.size.width,

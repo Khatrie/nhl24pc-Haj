@@ -4,6 +4,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Implemented enhancements
 
+- Texture construction caches successful Vulkan sample-count capability queries per physical device instance, keyed by format, image type, tiling, usage, and creation flags. Unsupported format handling and fallback are preserved.
+
 - The launcher offers persistent full-session performance logging on ordinary Play. It writes frame, thread, and stutter data automatically and uses timing-only F1 behavior. The dedicated diagnostic launch still offers full captures.
 
 - The frame CSV records image construction separately for ordinary and expanded textures. Subtract construction time from the corresponding allocation total to estimate cache-registration time.
@@ -45,6 +47,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 - Build with the repository scripts and run `tools/make_release.ps1` to stage release output. Verify the deployed executables against the build outputs and preserve local game data, saves, and settings.
 
 ## Known bugs and bottlenecks
+
+- **Arena image replacement:** The automatic 10,507-frame run attributed 159 ms of a 400 ms arena-loading frame to expanded-image construction and under 0.1 ms to cache registration. Sampled expansion logs show several one-mip-at-a-time chains, including 512×512 single-layer and 256×256 eight-layer images. Avoid predicting a larger guest footprint without a verified resource layout. Vulkan allocation and image construction overhead remain unmeasured separately.
 
 - **November 24 post-batching trace:** Seven timing-only markers, 16.67 ms median, 33.56 ms p99, and 83.17 ms p99.9. The largest arena-loading frame fell from 516 to 366 ms between runs. Its expansion guest-copy time fell from 163 to 108 ms, while total texture refresh volume fell from about 710 to 613 MiB. The runs differ in scene workload and starting memory headroom, so the difference does not isolate the batching gain. Expanded-image allocation and registration still took 113 ms in that frame. A later 217 ms frame recorded 104 ms of shader and pipeline compilation, and the 100 ms frame before marker 6 recorded 36 ms of readback waits.
 

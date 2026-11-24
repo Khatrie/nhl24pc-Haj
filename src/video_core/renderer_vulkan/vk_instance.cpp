@@ -846,6 +846,30 @@ bool Instance::IsFormatSupported(const vk::Format format,
     return (GetFormatFeatureFlags(format) & flags) == flags;
 }
 
+vk::ResultValue<vk::SampleCountFlags>
+Instance::GetImageSampleCounts(vk::Format format, vk::ImageType type, vk::ImageTiling tiling,
+                               vk::ImageUsageFlags usage, vk::ImageCreateFlags flags) const {
+    const auto key = std::make_tuple(format, type, tiling, usage, flags);
+    std::scoped_lock lock{image_sample_counts_mutex};
+    if (const auto it = image_sample_counts.find(key); it != image_sample_counts.end()) {
+        return {vk::Result::eSuccess, vk::SampleCountFlags{it->second}};
+    }
+
+    const vk::PhysicalDeviceImageFormatInfo2 info{
+        .format = format,
+        .type = type,
+        .tiling = tiling,
+        .usage = usage,
+        .flags = flags,
+    };
+    const auto properties = physical_device.getImageFormatProperties2(info);
+    const auto sample_counts = properties.value.imageFormatProperties.sampleCounts;
+    if (properties.result == vk::Result::eSuccess) {
+        image_sample_counts.emplace(key, sample_counts);
+    }
+    return {properties.result, vk::SampleCountFlags{sample_counts}};
+}
+
 vk::Format Instance::GetSupportedFormat(const vk::Format format,
                                         const vk::FormatFeatureFlags2 flags) const {
     if (!IsFormatSupported(format, flags)) [[unlikely]] {
