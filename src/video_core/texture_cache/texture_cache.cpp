@@ -2050,9 +2050,11 @@ ImageId TextureCache::CreateImage(const ImageInfo& info) {
     const bool measure = Diag::Enabled();
     const auto start = measure ? Clock::now() : Clock::time_point{};
     const auto image_id = slot_images.Insert(instance, runtime, slot_image_views, info);
+    const u64 construct_ns = measure ? ElapsedNanoseconds(start) : 0;
     RegisterImage(image_id);
     if (measure) {
         Diag::C::tc_image_alloc_ns.fetch_add(ElapsedNanoseconds(start), std::memory_order_relaxed);
+        Diag::C::tc_image_construct_ns.fetch_add(construct_ns, std::memory_order_relaxed);
     }
     return image_id;
 }
@@ -2080,6 +2082,7 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     const bool measure = Diag::Enabled();
     const auto allocation_start = measure ? Clock::now() : Clock::time_point{};
     const auto new_image_id = slot_images.Insert(instance, runtime, slot_image_views, expanded_info);
+    const u64 construct_ns = measure ? ElapsedNanoseconds(allocation_start) : 0;
     RegisterImage(new_image_id);
     const u64 allocation_ns = measure ? ElapsedNanoseconds(allocation_start) : 0;
 
@@ -2108,6 +2111,7 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     TrackImage(new_image_id);
     if (measure) {
         Diag::C::tc_expand_alloc_ns.fetch_add(allocation_ns, std::memory_order_relaxed);
+        Diag::C::tc_expand_construct_ns.fetch_add(construct_ns, std::memory_order_relaxed);
         Diag::C::tc_expand_copy_ns.fetch_add(copy_ns, std::memory_order_relaxed);
     }
     return new_image_id;

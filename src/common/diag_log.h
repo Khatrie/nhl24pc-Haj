@@ -51,6 +51,8 @@ inline std::atomic<u64> tc_expand_detile_ns{0};
 inline std::atomic<u64> tc_expand_upload_ns{0};
 inline std::atomic<u64> tc_expand_copy_ns{0};
 inline std::atomic<u64> tc_image_alloc_ns{0};
+inline std::atomic<u64> tc_image_construct_ns{0};
+inline std::atomic<u64> tc_expand_construct_ns{0};
 inline std::atomic<u64> tc_refresh_buffer_ns{0};
 inline std::atomic<u64> tc_refresh_detile_ns{0};
 inline std::atomic<u64> tc_refresh_upload_ns{0};

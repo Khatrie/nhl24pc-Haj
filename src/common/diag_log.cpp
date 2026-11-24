@@ -119,6 +119,7 @@ struct Counters {
         cs_hle, expand_alloc_ns, expand_buffer_ns, expand_detile_ns, expand_upload_ns, expand_copy_ns;
     u64 image_alloc_ns, refresh_buffer_ns, refresh_detile_ns, refresh_upload_ns;
     ImageBufferSample expand_source, refresh_source;
+    u64 image_construct_ns, expand_construct_ns;
 };
 
 /// A compute dispatch kind replaced by an emulator fast path (one entry per kind + shader).
@@ -200,6 +201,8 @@ Counters Snapshot() {
         .refresh_upload_ns = ld(C::tc_refresh_upload_ns),
         .expand_source = load_source(C::tc_expand_source),
         .refresh_source = load_source(C::tc_refresh_source),
+        .image_construct_ns = ld(C::tc_image_construct_ns),
+        .expand_construct_ns = ld(C::tc_expand_construct_ns),
     };
 }
 
@@ -364,7 +367,7 @@ constexpr const char* FramesHeader =
     "expand_copy_cpu_ms,image_alloc_cpu_ms,refresh_buffer_cpu_ms,refresh_detile_cpu_ms,"
     "refresh_upload_cpu_ms,expand_staging_cpu_ms,expand_guest_copy_cpu_ms,expand_flush_cpu_ms,"
     "expand_sync_cpu_ms,refresh_staging_cpu_ms,refresh_guest_copy_cpu_ms,refresh_flush_cpu_ms,"
-    "refresh_sync_cpu_ms";
+    "refresh_sync_cpu_ms,image_construct_cpu_ms,expand_construct_cpu_ms";
 
 #ifdef _WIN32
 u64 FileTimeTo100ns(const FILETIME& ft) {
@@ -1676,7 +1679,9 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
         };
         append_source(&Counters::expand_source);
         append_source(&Counters::refresh_source);
-        row += '\n';
+        fmt::format_to(std::back_inserter(row), ",{:.3f},{:.3f}\n",
+                       double(d(&Counters::image_construct_ns)) / 1e6,
+                       double(d(&Counters::expand_construct_ns)) / 1e6);
         std::scoped_lock lk{s.frame_mutex};
         s.frames_buf += row;
     }
