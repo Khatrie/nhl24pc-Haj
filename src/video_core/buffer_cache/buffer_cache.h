@@ -35,6 +35,13 @@ class TextureCache;
 class MemoryTracker;
 class PageManager;
 
+struct ImageBufferTiming {
+    u64 staging_ns{};
+    u64 guest_copy_ns{};
+    u64 flush_ns{};
+    u64 sync_ns{};
+};
+
 class BufferCache {
     static constexpr u64 ADDRESS_SPACE_BITS = 40;
     static constexpr u64 ARENA_PAGE_BITS = 32;
@@ -92,7 +99,8 @@ public:
                                                              bool is_texel_buffer = false);
 
     /// Attempts to obtain a buffer without modifying the cache contents.
-    [[nodiscard]] std::pair<const Buffer*, u64> ObtainBufferForImage(VAddr device_addr, u32 size);
+    [[nodiscard]] std::pair<const Buffer*, u64> ObtainBufferForImage(VAddr device_addr, u32 size,
+                                                                     ImageBufferTiming* timing);
 
     /// Return true when a region is modified from the CPU
     [[nodiscard]] bool IsRegionCpuModified(VAddr addr, size_t size);
@@ -107,6 +115,10 @@ public:
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
 private:
+    [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(VAddr device_addr, u32 size,
+                                                             bool is_written, bool is_texel_buffer,
+                                                             ImageBufferTiming* timing);
+
     struct ArenaBinds {
         const Buffer* arena;
         boost::container::small_vector<vk::SparseMemoryBind, 32> binds;

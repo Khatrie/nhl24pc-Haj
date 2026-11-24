@@ -357,13 +357,8 @@ public:
     }
 
 private:
-    struct ImageRefreshTiming {
-        u64 buffer_ns{};
-        u64 detile_ns{};
-        u64 upload_ns{};
-    };
-
-    void RefreshImage(Image& image, ImageRefreshTiming* timing);
+    [[nodiscard]] ImageId CreateImage(const ImageInfo& info);
+    void RefreshImage(Image& image, bool expanding);
 
     /// Iterate over all page indices in a range
     template <typename Func>

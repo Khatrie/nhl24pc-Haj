@@ -391,6 +391,12 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
                                                         bool is_written, bool is_texel_buffer) {
+    return ObtainBuffer(device_addr, size, is_written, is_texel_buffer, nullptr);
+}
+
+std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size, bool is_written,
+                                                        bool is_texel_buffer,
+                                                        ImageBufferTiming* timing) {
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
     if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
         const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
@@ -402,7 +408,13 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     const u64 last_block = (device_addr + size - 1) >> block_shift;
     const auto* arena = GetArena(first_block, last_block);
     EnsureResident(arena, first_block, last_block);
+    using Clock = std::chrono::steady_clock;
+    const auto sync_start = timing ? Clock::now() : Clock::time_point{};
     SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
+    if (timing) {
+        timing->sync_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - sync_start).count();
+    }
     if (is_written) {
         gpu_modified_ranges.Add(device_addr, size);
         NoteGpuWrite(device_addr, size);
@@ -410,14 +422,26 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     return {arena, arena->Offset(device_addr)};
 }
 
-std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_addr, u32 size) {
+std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_addr, u32 size,
+                                                               ImageBufferTiming* timing) {
     if (IsRegionGpuModified(device_addr, size)) {
-        return ObtainBuffer(device_addr, size, false);
+        return ObtainBuffer(device_addr, size, false, false, timing);
     }
+    using Clock = std::chrono::steady_clock;
+    const auto staging_start = timing ? Clock::now() : Clock::time_point{};
     const auto staging = staging_pool.Request(size, VideoCore::MemoryType::HostUncached,
                                               instance.StorageMinAlignment());
+    const auto copy_start = timing ? Clock::now() : Clock::time_point{};
     memory->CopySparseMemory(device_addr, staging.mapped, staging.size);
+    const auto flush_start = timing ? Clock::now() : Clock::time_point{};
     staging.Flush();
+    if (timing) {
+        using Nanoseconds = std::chrono::nanoseconds;
+        timing->staging_ns = std::chrono::duration_cast<Nanoseconds>(copy_start - staging_start).count();
+        timing->guest_copy_ns =
+            std::chrono::duration_cast<Nanoseconds>(flush_start - copy_start).count();
+        timing->flush_ns = std::chrono::duration_cast<Nanoseconds>(Clock::now() - flush_start).count();
+    }
     return {staging.buffer, staging.offset};
 }
 

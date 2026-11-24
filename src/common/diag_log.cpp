@@ -104,6 +104,10 @@ struct KeyThread {
     u64 last_100ns = 0;
 };
 
+struct ImageBufferSample {
+    u64 staging_ns, guest_copy_ns, flush_ns, sync_ns;
+};
+
 /// Snapshot of every counter the per-frame row and the summaries are derived from.
 struct Counters {
     u64 gpu_frame, gfx_submits, asc_submits, draws, dispatches, skip_nopipe, skip_bind, pipes,
@@ -113,6 +117,8 @@ struct Counters {
         snapshots, render_passes, file_opens, file_reads, file_bytes, audio_out, audio_wait_ns,
         threads_created, flip_full, swap_recreates, cs_meta_clear, cs_image_copy, cs_image_clear,
         cs_hle, expand_alloc_ns, expand_buffer_ns, expand_detile_ns, expand_upload_ns, expand_copy_ns;
+    u64 image_alloc_ns, refresh_buffer_ns, refresh_detile_ns, refresh_upload_ns;
+    ImageBufferSample expand_source, refresh_source;
 };
 
 /// A compute dispatch kind replaced by an emulator fast path (one entry per kind + shader).
@@ -126,6 +132,10 @@ struct ShortcutRec {
 Counters Snapshot() {
     namespace P = VideoCore::Perf;
     const auto ld = [](const std::atomic<u64>& a) { return a.load(std::memory_order_relaxed); };
+    const auto load_source = [&](const C::ImageBufferCounters& source) {
+        return ImageBufferSample{ld(source.staging_ns), ld(source.guest_copy_ns),
+                                 ld(source.flush_ns), ld(source.sync_ns)};
+    };
     u64 freed = 0;
     for (const auto& f : P::tc_free) {
         freed += ld(f);
@@ -184,6 +194,12 @@ Counters Snapshot() {
         .expand_detile_ns = ld(C::tc_expand_detile_ns),
         .expand_upload_ns = ld(C::tc_expand_upload_ns),
         .expand_copy_ns = ld(C::tc_expand_copy_ns),
+        .image_alloc_ns = ld(C::tc_image_alloc_ns),
+        .refresh_buffer_ns = ld(C::tc_refresh_buffer_ns),
+        .refresh_detile_ns = ld(C::tc_refresh_detile_ns),
+        .refresh_upload_ns = ld(C::tc_refresh_upload_ns),
+        .expand_source = load_source(C::tc_expand_source),
+        .refresh_source = load_source(C::tc_refresh_source),
     };
 }
 
@@ -345,7 +361,10 @@ constexpr const char* FramesHeader =
     "flip_pending,file_reads,file_kb,audio_out,audio_wait_ms,cpu_ms,gpu_thr_ms,present_ms,sim_ms,"
     "render_ms,jobs_ms,page_faults,cs_meta_clear,cs_image_copy,cs_image_clear,cs_hle,flags,"
     "expand_alloc_cpu_ms,expand_buffer_cpu_ms,expand_detile_cpu_ms,expand_upload_cpu_ms,"
-    "expand_copy_cpu_ms";
+    "expand_copy_cpu_ms,image_alloc_cpu_ms,refresh_buffer_cpu_ms,refresh_detile_cpu_ms,"
+    "refresh_upload_cpu_ms,expand_staging_cpu_ms,expand_guest_copy_cpu_ms,expand_flush_cpu_ms,"
+    "expand_sync_cpu_ms,refresh_staging_cpu_ms,refresh_guest_copy_cpu_ms,refresh_flush_cpu_ms,"
+    "refresh_sync_cpu_ms";
 
 #ifdef _WIN32
 u64 FileTimeTo100ns(const FILETIME& ft) {
@@ -1613,12 +1632,12 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
 
     if (s.frames_csv) {
         std::string row;
-        row.reserve(320);
+        row.reserve(400);
         fmt::format_to(std::back_inserter(row),
                        "{},{:.3f},{:.2f},{},{},{},{},{},{},{},{},{:.2f},{},{:.2f},{},{:.2f},{},{},{:.2f},{},"
                        "{},{},{:.2f},{:.2f},{:.2f},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
                        "{},{},{},{},{},{},{},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{:.2f},{},{},{},"
-                       "{},{},{},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}\n",
+                       "{},{},{},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}",
                        frame_no, t_s, dt_ms, cur.gpu_frame, d(&Counters::gfx_submits),
                        d(&Counters::asc_submits), d(&Counters::draws), d(&Counters::dispatches),
                        d(&Counters::skip_nopipe), d(&Counters::skip_bind), d(&Counters::pipes), pipe_ms,
@@ -1641,6 +1660,23 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
                        double(d(&Counters::expand_detile_ns)) / 1e6,
                        double(d(&Counters::expand_upload_ns)) / 1e6,
                        double(d(&Counters::expand_copy_ns)) / 1e6);
+        fmt::format_to(std::back_inserter(row), ",{:.3f},{:.3f},{:.3f},{:.3f}",
+                       double(d(&Counters::image_alloc_ns)) / 1e6,
+                       double(d(&Counters::refresh_buffer_ns)) / 1e6,
+                       double(d(&Counters::refresh_detile_ns)) / 1e6,
+                       double(d(&Counters::refresh_upload_ns)) / 1e6);
+        const auto append_source = [&](const ImageBufferSample Counters::* source) {
+            const auto& before = p.*source;
+            const auto& after = cur.*source;
+            fmt::format_to(std::back_inserter(row), ",{:.3f},{:.3f},{:.3f},{:.3f}",
+                           double(after.staging_ns - before.staging_ns) / 1e6,
+                           double(after.guest_copy_ns - before.guest_copy_ns) / 1e6,
+                           double(after.flush_ns - before.flush_ns) / 1e6,
+                           double(after.sync_ns - before.sync_ns) / 1e6);
+        };
+        append_source(&Counters::expand_source);
+        append_source(&Counters::refresh_source);
+        row += '\n';
         std::scoped_lock lk{s.frame_mutex};
         s.frames_buf += row;
     }

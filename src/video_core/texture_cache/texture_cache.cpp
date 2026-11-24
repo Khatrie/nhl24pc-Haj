@@ -1659,8 +1659,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         auto new_info = requested_info;
         new_info.resources = std::max(requested_info.resources, cache_image.info.resources);
         new_info.UpdateSize();
-        const auto new_image_id = slot_images.Insert(instance, runtime, slot_image_views, new_info);
-        RegisterImage(new_image_id);
+        const auto new_image_id = CreateImage(new_info);
 
         // Inherit image usage
         auto& new_image = slot_images[new_image_id];
@@ -1967,9 +1966,7 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
                 }
 
                 if (!merged_image_id && copy_gpu_data) {
-                    merged_image_id =
-                        slot_images.Insert(instance, runtime, slot_image_views, image_info);
-                    RegisterImage(merged_image_id);
+                    merged_image_id = CreateImage(image_info);
                     RefreshImage(slot_images[merged_image_id]);
                     TrackImage(merged_image_id);
                 }
@@ -2048,6 +2045,18 @@ static u64 ElapsedNanoseconds(std::chrono::steady_clock::time_point start) {
         .count();
 }
 
+ImageId TextureCache::CreateImage(const ImageInfo& info) {
+    using Clock = std::chrono::steady_clock;
+    const bool measure = Diag::Enabled();
+    const auto start = measure ? Clock::now() : Clock::time_point{};
+    const auto image_id = slot_images.Insert(instance, runtime, slot_image_views, info);
+    RegisterImage(image_id);
+    if (measure) {
+        Diag::C::tc_image_alloc_ns.fetch_add(ElapsedNanoseconds(start), std::memory_order_relaxed);
+    }
+    return image_id;
+}
+
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     VideoCore::Perf::tc_expand.fetch_add(1, std::memory_order_relaxed);
     {
@@ -2077,8 +2086,7 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     auto& src_image = slot_images[image_id];
     auto& new_image = slot_images[new_image_id];
     const bool copy_gpu_data = src_image.SafeToDownload();
-    ImageRefreshTiming refresh_timing;
-    RefreshImage(new_image, measure ? &refresh_timing : nullptr);
+    RefreshImage(new_image, true);
     u64 copy_ns = 0;
     if (copy_gpu_data) {
         new_image.content_hash = src_image.content_hash ? src_image.content_hash : 1ULL;
@@ -2100,9 +2108,6 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     TrackImage(new_image_id);
     if (measure) {
         Diag::C::tc_expand_alloc_ns.fetch_add(allocation_ns, std::memory_order_relaxed);
-        Diag::C::tc_expand_buffer_ns.fetch_add(refresh_timing.buffer_ns, std::memory_order_relaxed);
-        Diag::C::tc_expand_detile_ns.fetch_add(refresh_timing.detile_ns, std::memory_order_relaxed);
-        Diag::C::tc_expand_upload_ns.fetch_add(refresh_timing.upload_ns, std::memory_order_relaxed);
         Diag::C::tc_expand_copy_ns.fetch_add(copy_ns, std::memory_order_relaxed);
     }
     return new_image_id;
@@ -2196,8 +2201,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (desc.type == BindingType::Texture || desc.type == BindingType::Storage) {
             ApplyRememberedMips(new_info);
         }
-        image_id = slot_images.Insert(instance, runtime, slot_image_views, new_info);
-        RegisterImage(image_id);
+        image_id = CreateImage(new_info);
     }
 
     VideoCore::Perf::current_request = nullptr;
@@ -2310,8 +2314,7 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
             info.guest_address = desc.info.stencil_addr;
             info.guest_size = desc.info.stencil_size;
             info.size = desc.info.size;
-            stencil_id = slot_images.Insert(instance, runtime, slot_image_views, info);
-            RegisterImage(stencil_id);
+            stencil_id = CreateImage(info);
         }
         Image& stencil_image = slot_images[stencil_id];
         TouchImage(stencil_image);
@@ -2364,10 +2367,10 @@ void TextureCache::DumpImage(ImageId image_id) {
 }
 
 void TextureCache::RefreshImage(Image& image) {
-    RefreshImage(image, nullptr);
+    RefreshImage(image, false);
 }
 
-void TextureCache::RefreshImage(Image& image, ImageRefreshTiming* timing) {
+void TextureCache::RefreshImage(Image& image, bool expanding) {
     if (False(image.flags & ImageFlagBits::Dirty) || image.info.num_samples > 1) {
         return;
     }
@@ -2445,27 +2448,38 @@ void TextureCache::RefreshImage(Image& image, ImageRefreshTiming* timing) {
     scheduler.EndRendering();
 
     using Clock = std::chrono::steady_clock;
-    const auto buffer_start = timing ? Clock::now() : Clock::time_point{};
-    const auto [in_buffer, in_offset] =
-        buffer_cache.ObtainBufferForImage(image.info.guest_address, image.info.guest_size);
-    const auto detile_start = timing ? Clock::now() : Clock::time_point{};
+    const bool measure = Diag::Enabled();
+    ImageBufferTiming source_timing;
+    const auto buffer_start = measure ? Clock::now() : Clock::time_point{};
+    const auto [in_buffer, in_offset] = buffer_cache.ObtainBufferForImage(
+        image.info.guest_address, image.info.guest_size, measure ? &source_timing : nullptr);
+    const auto detile_start = measure ? Clock::now() : Clock::time_point{};
     const auto [buffer, offset] = tile_manager.DetileImage(in_buffer, in_offset, image.info);
-    if (timing) {
-        timing->buffer_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                detile_start - buffer_start)
-                                .count();
-        timing->detile_ns = ElapsedNanoseconds(detile_start);
-    }
+    const u64 detile_ns = measure ? ElapsedNanoseconds(detile_start) : 0;
     for (auto& copy : image_copies) {
         copy.bufferOffset += offset;
     }
 
     Diag::C::tc_refresh.fetch_add(1, std::memory_order_relaxed);
     Diag::C::tc_refresh_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
-    const auto upload_start = timing ? Clock::now() : Clock::time_point{};
+    const auto upload_start = measure ? Clock::now() : Clock::time_point{};
     runtime.UploadImage(&image, buffer, image_copies);
-    if (timing) {
-        timing->upload_ns = ElapsedNanoseconds(upload_start);
+    if (measure) {
+        namespace C = Diag::C;
+        const u64 upload_ns = ElapsedNanoseconds(upload_start);
+        const u64 buffer_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(detile_start - buffer_start).count();
+        auto& buffer_total = expanding ? C::tc_expand_buffer_ns : C::tc_refresh_buffer_ns;
+        auto& detile_total = expanding ? C::tc_expand_detile_ns : C::tc_refresh_detile_ns;
+        auto& upload_total = expanding ? C::tc_expand_upload_ns : C::tc_refresh_upload_ns;
+        auto& source_total = expanding ? C::tc_expand_source : C::tc_refresh_source;
+        buffer_total.fetch_add(buffer_ns, std::memory_order_relaxed);
+        detile_total.fetch_add(detile_ns, std::memory_order_relaxed);
+        upload_total.fetch_add(upload_ns, std::memory_order_relaxed);
+        source_total.staging_ns.fetch_add(source_timing.staging_ns, std::memory_order_relaxed);
+        source_total.guest_copy_ns.fetch_add(source_timing.guest_copy_ns, std::memory_order_relaxed);
+        source_total.flush_ns.fetch_add(source_timing.flush_ns, std::memory_order_relaxed);
+        source_total.sync_ns.fetch_add(source_timing.sync_ns, std::memory_order_relaxed);
     }
     ApplyPortraitOverride(image);
     ApplyTextureOverride(image);

@@ -50,6 +50,18 @@ inline std::atomic<u64> tc_expand_buffer_ns{0};
 inline std::atomic<u64> tc_expand_detile_ns{0};
 inline std::atomic<u64> tc_expand_upload_ns{0};
 inline std::atomic<u64> tc_expand_copy_ns{0};
+inline std::atomic<u64> tc_image_alloc_ns{0};
+inline std::atomic<u64> tc_refresh_buffer_ns{0};
+inline std::atomic<u64> tc_refresh_detile_ns{0};
+inline std::atomic<u64> tc_refresh_upload_ns{0};
+struct ImageBufferCounters {
+    std::atomic<u64> staging_ns{0};
+    std::atomic<u64> guest_copy_ns{0};
+    std::atomic<u64> flush_ns{0};
+    std::atomic<u64> sync_ns{0};
+};
+inline ImageBufferCounters tc_expand_source;
+inline ImageBufferCounters tc_refresh_source;
 inline std::atomic<u64> tc_snapshots{0};        ///< streamed-image snapshots taken
 inline std::atomic<u64> file_opens{0};          ///< guest file opens
 inline std::atomic<u64> file_reads{0};          ///< guest read calls (read/pread/readv/aio)

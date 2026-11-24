@@ -4,6 +4,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Implemented enhancements
 
+- The frame CSV now separates ordinary image allocation and refresh costs from expansion. For each source-buffer path it records staging requests, guest-memory copies, staging flushes, and synchronization of GPU-backed buffers. Synchronization timing includes any copies it performs internally. The source timings are components of the corresponding buffer total.
+
 - Diagnostic runs record CPU-side elapsed time for texture expansion in the frame CSV. The new columns distinguish image allocation and registration, source-buffer preparation, detiling, upload recording, and GPU image-copy recording. These timings describe host work and can include waits within those operations.
 
 - Exact texture-cache lookups now check the guest address bucket first and scan the full region on a miss. Overlap resolution, image refreshes, and readback behavior are preserved.
@@ -37,6 +39,8 @@ Updated November 23, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 - Build with the repository scripts and run `tools/make_release.ps1` to stage release output. Verify the deployed executables against the build outputs and preserve local game data, saves, and settings.
 
 ## Known bugs and bottlenecks
+
+- **November 24 expansion timing trace:** Eight timing markers, 16.68 ms median, and 33.70 ms p99. The 400 ms loading frame recorded 106 expansions, 147 ms of expansion source-buffer preparation and 131 ms of allocation and registration. Detiling, upload recording, and image-copy recording totaled under 4 ms of host elapsed time. The 116 ms hitch before marker 3 recorded about 341 MiB of texture refreshes but only about 7 ms in the measured expansion phases. Profile source-buffer preparation and ordinary image creation and refresh separately before treating all gameplay hitches as expansion costs.
 
 - **November 24 marker-only trace after the lookup change:** Median stayed at 16.69 ms and session p99 improved from 49.99 to 33.53 ms. F1 generated no capture files, so the changed capture mode and different session length prevent attributing the improvement to the lookup change alone. An 83.4 ms frame before marker 2 refreshed about 207 MiB of textures and waited 13.4 ms on readbacks. The largest loading hitch was 400 ms with about 573 MiB of texture refreshes, 155 image creations, 108 expansions, and under 1 ms of readback wait. No shaders or pipelines compiled in this run.
 
