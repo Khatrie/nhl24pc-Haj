@@ -1,0 +1,3 @@
+Controller prompt artwork is adapted from Xelu's Free Controller and Keyboard Prompts by Nicolae Berbece (Xelu), available under CC0 1.0.
+https://github.com/DJLink/Xelu_Free_Controller-Key_Prompts
+https://thoseawesomeguys.com/prompts/

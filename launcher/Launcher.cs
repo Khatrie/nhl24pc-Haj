@@ -574,6 +574,7 @@ namespace NhlPort
         Label captureLabel;
         PadAction capturing;
         ComboBox resolutionBox;
+        ComboBox promptLayoutBox;
         ComboBox fpsCapBox;
         CheckBox ignoreFlipRateBox;
         CheckBox fullscreenBox;
@@ -1103,6 +1104,9 @@ namespace NhlPort
             Gpu["vblank_frequency"] = Math.Max(30, Math.Min(240, fpsCap));
             if (ignoreFlipRateBox != null) Gpu["ignore_flip_rate"] = ignoreFlipRateBox.Checked;
             Launcher["language"] = Loc.Lang;
+            if (promptLayoutBox != null)
+                Launcher["prompt_layout"] = promptLayoutBox.SelectedIndex == 1 ? "xbox" :
+                    promptLayoutBox.SelectedIndex == 2 ? "nintendo" : "playstation";
             Launcher["show_fps"] = fpsOverlayBox != null && fpsOverlayBox.Checked;
             Launcher["diag_marker_only"] = diagMarkerOnlyBox.Checked;
             Launcher["diag_record_on_play"] = diagRecordOnPlayBox.Checked;
@@ -1451,6 +1455,16 @@ namespace NhlPort
             var defaultsBtn = new FlatButton { Left = 460, Top = 400, Width = 180, Height = 30, Text = Loc.T("defaults") };
             defaultsBtn.Click += delegate { foreach (var a in actions) bindings[a.Id] = a.Default; RefreshBindList(); padBox.Invalidate(); RefreshReadyCheck(); };
             controlsTab.Controls.Add(defaultsBtn);
+
+            controlsTab.Controls.Add(new TransparentLabel { Left = 662, Top = 405, Width = 125, Height = 22,
+                Text = "Button prompts", ForeColor = Theme.Muted, Font = Theme.Label });
+            promptLayoutBox = new ComboBox { Left = 790, Top = 400, Width = 280,
+                DropDownStyle = ComboBoxStyle.DropDownList };
+            Theme.Style(promptLayoutBox);
+            promptLayoutBox.Items.AddRange(new object[] { "PlayStation", "Xbox", "Nintendo" });
+            string promptLayout = Convert.ToString(LauncherValue("prompt_layout", "playstation"));
+            promptLayoutBox.SelectedIndex = promptLayout == "xbox" ? 1 : promptLayout == "nintendo" ? 2 : 0;
+            controlsTab.Controls.Add(promptLayoutBox);
 
             // ---- display tab (the full set; mirrors the quick settings)
             int y = 20;
@@ -2329,6 +2343,7 @@ namespace NhlPort
             }
             var psi = new ProcessStartInfo(gameExe) { WorkingDirectory = baseDir, UseShellExecute = false,
                 Arguments = "-g \"" + eboot + "\"" };
+            psi.EnvironmentVariables["NHLPORT_PROMPT_LAYOUT"] = Convert.ToString(LauncherValue("prompt_layout", "playstation"));
             if (File.Exists(Path.Combine(baseDir, "user", "patches", "nhl24.xml")))
                 psi.Arguments += " -p nhl24.xml";
             if (diagnostics || diagRecordOnPlayBox.Checked)

@@ -31,6 +31,8 @@ The build includes fixes for texture-cache synchronization, image resizing and c
 
 The fork also supports an optional Utah Mammoth jersey and roster mod when the corresponding files are available. [Utah texture notes](docs/UTAH_CREST_NOTES.md)
 
+In **Advanced → Controls**, choose PlayStation, Xbox, or Nintendo button prompts before launching the game. The Xbox and Nintendo packs replace supported button textures in menus and gameplay. Some controller illustrations and split prompt variants still use the game's original artwork. Button inputs follow the configured controller mapping.
+
 ## In-game settings and trophies
 
 - **Open settings:** Press **Menu + View** together on an Xbox-style controller, or **Options + Share/Create** on a PlayStation-style controller. The translucent overlay starts near the upper left and can be moved or resized. Use the D-pad or left stick to navigate and the shoulder buttons to switch tabs.
@@ -69,6 +71,7 @@ See [PROJECT_STATUS.md](PROJECT_STATUS.md) for implementation notes, known issue
 - **The shadPS4 team and contributors** built the underlying emulator. Recent renderer backports adapt **johulk**’s subresource-preservation work, **BeneausVillach**’s stale image-copy fix, **DanielSvoboda**’s subresource extent checks, and **Gih-pt**’s redundant pipeline-bind reduction. [shadPS4](https://github.com/shadps4-emu/shadPS4) · [PR #5433](https://github.com/shadps4-emu/shadPS4/pull/5433) · [PR #5444](https://github.com/shadps4-emu/shadPS4/pull/5444) · [PR #5524](https://github.com/shadps4-emu/shadPS4/pull/5524) · [PR #5726](https://github.com/shadps4-emu/shadPS4/pull/5726)
 - **LEVASTAK’s NHL24PC V3.2** supplied the dynamic-resolution patch signatures, the approach for synchronizing an image that overlaps a texel buffer, and the sampler changes for forced anisotropic filtering and mip bias. See commits `bf5d6b8b`, `c9ce4671`, and `1fb3bc6d`.
 - **NVIDIA** provides DLSS and the NGX runtime. DLSS is a trademark of NVIDIA. See [third-party license notices](LICENSES/) for additional dependencies.
+- **Xelu / Those Awesome Guys** created the controller prompt artwork, released under CC0. The prompt textures are adapted from the [Xelu controller prompts](https://github.com/DJLink/Xelu_Free_Controller-Key_Prompts).
 
 Support the parent fork and the original port through their respective pages. [hilals](https://ko-fi.com/hishak) · [HajDEO](https://ko-fi.com/E1E61VGHII)
 

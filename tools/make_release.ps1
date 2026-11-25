@@ -33,6 +33,7 @@ if ($redist) {
 # user template: config without machine/user specific sections, controls, memory patches
 $user = Join-Path $Out 'user'
 New-Item -ItemType Directory -Force $user, (Join-Path $user 'input_config'), (Join-Path $user 'patches') | Out-Null
+Copy-Item -Recurse -Force (Join-Path $repo 'launcher\prompt_packs') $user
 $cfg = Get-Content (Join-Path $Build 'user\config.json') -Raw | ConvertFrom-Json
 foreach ($section in 'Launcher') { if ($cfg.PSObject.Properties[$section]) { $cfg.PSObject.Properties.Remove($section) } }
 if ($cfg.General) {

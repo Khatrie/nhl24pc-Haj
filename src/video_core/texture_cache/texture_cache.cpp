@@ -195,70 +195,86 @@ struct TextureOverrideCfg {
 const TextureOverrideCfg& GetTextureOverrideCfg() {
     static const TextureOverrideCfg cfg = [] {
         TextureOverrideCfg c;
-        c.dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "texture_override";
+        const auto user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+        c.dir = user_dir / "texture_override";
         std::error_code ec;
-        if (!std::filesystem::is_directory(c.dir, ec)) {
-            return c;
+        std::vector<std::filesystem::path> directories{c.dir};
+        if (const char* pack = std::getenv("NHLPORT_PROMPT_LAYOUT"); pack &&
+            (std::strcmp(pack, "xbox") == 0 || std::strcmp(pack, "nintendo") == 0)) {
+            directories.push_back(user_dir / "prompt_packs" / pack);
         }
-        c.enabled = true;
-        for (const auto& entry : std::filesystem::directory_iterator(c.dir, ec)) {
-            if (!entry.is_regular_file(ec) || entry.path().extension() != ".dds") {
+        for (const auto& directory : directories) {
+            ec.clear();
+            if (!std::filesystem::is_directory(directory, ec)) {
                 continue;
             }
-            const std::string stem = entry.path().stem().string();
-            u64 hash = 0;
-            size_t last_underscore = stem.rfind('_');
-            std::string hash_str = (last_underscore != std::string::npos) ? stem.substr(last_underscore + 1) : stem;
-            if (hash_str.size() == 16 && hash_str.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) {
-                hash = std::strtoull(hash_str.c_str(), nullptr, 16);
-            }
-            if (hash == 0) {
-                continue;
-            }
-            std::ifstream in(entry.path(), std::ios::binary);
-            if (!in) {
-                continue;
-            }
-            std::vector<u8> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            if (file.size() < 128 || std::memcmp(file.data(), "DDS ", 4) != 0) {
-                continue;
-            }
-            u32 h = 0, w = 0, mips = 0;
-            std::memcpy(&h, file.data() + 12, 4);
-            std::memcpy(&w, file.data() + 16, 4);
-            std::memcpy(&mips, file.data() + 28, 4);
-            if (w == 0 || h == 0) {
-                continue;
-            }
-            if (mips == 0) mips = 1;
+            for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+                if (!entry.is_regular_file(ec) || entry.path().extension() != ".dds") {
+                    continue;
+                }
+                const std::string stem = entry.path().stem().string();
+                u64 hash = 0;
+                size_t last_underscore = stem.rfind('_');
+                std::string hash_str =
+                    (last_underscore != std::string::npos) ? stem.substr(last_underscore + 1) : stem;
+                if (hash_str.size() == 16 &&
+                    hash_str.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos) {
+                    hash = std::strtoull(hash_str.c_str(), nullptr, 16);
+                }
+                if (hash == 0) {
+                    continue;
+                }
+                std::ifstream in(entry.path(), std::ios::binary);
+                if (!in) {
+                    continue;
+                }
+                std::vector<u8> file((std::istreambuf_iterator<char>(in)),
+                                     std::istreambuf_iterator<char>());
+                if (file.size() < 128 || std::memcmp(file.data(), "DDS ", 4) != 0) {
+                    continue;
+                }
+                u32 h = 0, w = 0, mips = 0;
+                std::memcpy(&h, file.data() + 12, 4);
+                std::memcpy(&w, file.data() + 16, 4);
+                std::memcpy(&mips, file.data() + 28, 4);
+                if (w == 0 || h == 0) {
+                    continue;
+                }
+                if (mips == 0) {
+                    mips = 1;
+                }
 
-            TextureOverrideEntry oe;
-            oe.width = w;
-            oe.height = h;
-            oe.mips = mips;
+                TextureOverrideEntry oe;
+                oe.width = w;
+                oe.height = h;
+                oe.mips = mips;
 
-            size_t data_offset = 128;
-            if (std::memcmp(file.data() + 84, "DX10", 4) == 0 && file.size() >= 148) {
-                data_offset = 148;
-                std::memcpy(&oe.dxgi, file.data() + 128, 4);
-            } else if (std::memcmp(file.data() + 84, "DXT1", 4) == 0) {
-                oe.dxgi = 71;
-            } else if (std::memcmp(file.data() + 84, "DXT5", 4) == 0) {
-                oe.dxgi = 77;
-            } else if (std::memcmp(file.data() + 84, "BC7", 3) == 0 || std::memcmp(file.data() + 84, "BC7U", 4) == 0) {
-                oe.dxgi = 98;
-            }
+                size_t data_offset = 128;
+                if (std::memcmp(file.data() + 84, "DX10", 4) == 0 && file.size() >= 148) {
+                    data_offset = 148;
+                    std::memcpy(&oe.dxgi, file.data() + 128, 4);
+                } else if (std::memcmp(file.data() + 84, "DXT1", 4) == 0) {
+                    oe.dxgi = 71;
+                } else if (std::memcmp(file.data() + 84, "DXT5", 4) == 0) {
+                    oe.dxgi = 77;
+                } else if (std::memcmp(file.data() + 84, "BC7", 3) == 0 ||
+                           std::memcmp(file.data() + 84, "BC7U", 4) == 0) {
+                    oe.dxgi = 98;
+                }
 
-            if (file.size() <= data_offset) {
-                continue;
+                if (file.size() <= data_offset) {
+                    continue;
+                }
+                oe.data.assign(file.begin() + data_offset, file.end());
+                c.target_dims.insert((w << 16) | h);
+                c.target_formats.insert(oe.dxgi);
+                c.overrides[hash] = std::move(oe);
+                LOG_INFO(Render,
+                         "texture override loaded: hash {:016x} ({}x{}, mips {}, dxgi {}) from {}",
+                         hash, w, h, mips, oe.dxgi, entry.path().filename().string());
             }
-            oe.data.assign(file.begin() + data_offset, file.end());
-            c.target_dims.insert((w << 16) | h);
-            c.target_formats.insert(oe.dxgi);
-            c.overrides[hash] = std::move(oe);
-            LOG_INFO(Render, "texture override loaded: hash {:016x} ({}x{}, mips {}, dxgi {}) from {}",
-                     hash, w, h, mips, oe.dxgi, entry.path().filename().string());
         }
+        c.enabled = !c.overrides.empty();
         return c;
     }();
     return cfg;
