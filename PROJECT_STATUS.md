@@ -6,6 +6,8 @@ Updated November 24, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 - The launcher Controls tab selects PlayStation, Xbox or Nintendo button prompts for the next game launch. Hash-matched DDS packs load alongside existing texture overrides. Xbox and Nintendo artwork is adapted from Xelu's CC0 controller prompts. Face, shoulder, trigger, menu and selected split-mask variants are included. The Xbox pack loaded and applied several prompt textures in a release session. Controller illustrations and broad gameplay coverage remain to be verified.
 
+- The launcher and `tools/select_button_prompts.ps1` invoke a packaged helper to remap the controls-reference font. The helper validates the EU v1.00 archive fingerprint, uses the GPL-3.0-or-later ooz decoder, records a recovery journal, and atomically replaces the TOC. Unsupported versions keep texture prompts and report the font limitation. Each Xbox or Nintendo layout change appends about 3.3 MB to the CAS archives. PlayStation restores the original TOC entries without truncating other archive data.
+
 - Retain up to 64 MiB of otherwise-expired upload staging buffers for up to 1,800 renderer ticks. The policy applies to host upload staging and preserves GPU completion checks. Set `NHLPORT_WARM_UPLOAD_STAGING=0` to compare with the previous trimming policy. The frame CSV reports requested bytes from new and reused upload buffers, retained bytes, and CPU-side time inside `vmaCreateImage`. Isolated startup runs emitted these counters in both modes and neither retained expired blocks. The arena effect is unmeasured. The experiment was informed by [bbport's streaming measurements](https://github.com/deadinside28/bloodborne_pc/blob/master/docs/parallel_gpu.md#streaming-stutter-bb_frame_stats-stall-lines).
 
 - Texture construction caches successful Vulkan sample-count capability queries per physical device instance, keyed by format, image type, tiling, usage, and creation flags. Unsupported format handling and fallback are preserved.
@@ -80,6 +82,7 @@ Updated November 24, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 | Files | Purpose |
 | --- | --- |
 | `launcher/Launcher.cs` | Region detection, launcher theme and navigation, localized controls, presets, cache status, diagnostics, game arguments, and smoother menu toggle. |
+| `tools/prompt-font-helper/`, `tools/select_button_prompts.ps1`, `launcher/prompt_packs/` | Reversible controls-reference font updates, standalone layout selection, and controller artwork. |
 | `src/core/emulator_settings.h`, `src/core/libraries/videoout/driver.cpp` | Relaxed readback default, optional flip-rate setting, and VideoOut presentation cadence. |
 | `src/common/thread.cpp` | Per-thread Windows sleep timer reuse and fallback. |
 | `src/sdl_window.cpp`, `src/imgui/big_picture/settings_dialog_imgui.cpp`, `settings_dialog_imgui.h` | Controller shortcut, compact in-game layout, and additional settings controls. |
@@ -94,7 +97,7 @@ Updated November 24, 2026. Active branch: `codex/renderer-upstream-fixes`. The w
 
 ## Pending development
 
-- The controls reference still renders PlayStation symbols from `nhl/ui/fonts/nhl-symbols.ttf`. Its font already contains Xbox glyphs. A local font character-map experiment successfully mapped the eight face and shoulder symbols to those glyphs, and a reversible archive patch was verified against copies of the EU 1.00 data files. The modified font has not been validated in-game or integrated into the launcher. Nintendo trigger glyphs need suitable outlines. A distributable solution needs game-version validation, crash-safe recovery, and an appropriately licensed archive decoder and writer.
+- Verify the remapped controls-reference font in-game across Xbox and Nintendo layouts. The archive helper is verified against EU v1.00 data and safely declines unsupported fingerprints. Test US and other versions before extending support.
 - Verify Xbox and Nintendo prompts across game versions, gameplay contexts and controller configurations. Controller illustrations and some control-layout images are not covered by the initial packs. The texture override skips arrays and render targets, and synchronizes the GPU for matching upload candidates. Measure its performance impact.
 - Compare cold and warm upload staging. [bbport's streaming trace](https://github.com/deadinside28/bloodborne_pc/blob/master/docs/parallel_gpu.md#streaming-stutter-bb_frame_stats-stall-lines) found CPU first-touch costs when staging pages were recreated between bursts. The latest NHL arena hitch recorded about 151,000 process-wide page faults, which cannot identify the faulting allocation. Measure new versus recycled upload blocks and test bounded retention before moving copies onto workers.
 - Check [shadPS4 #5761](https://github.com/shadps4-emu/shadPS4/pull/5761) against NHL equal-address texture requests with the same layout and different guest byte sizes. Track matches before backporting. The fix addresses a one-mip, one-layer case and the observed mip-growth chains require different handling.

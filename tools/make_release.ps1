@@ -34,6 +34,20 @@ if ($redist) {
 $user = Join-Path $Out 'user'
 New-Item -ItemType Directory -Force $user, (Join-Path $user 'input_config'), (Join-Path $user 'patches') | Out-Null
 Copy-Item -Recurse -Force (Join-Path $repo 'launcher\prompt_packs') $user
+$releaseTools = Join-Path $Out 'tools'
+New-Item -ItemType Directory -Force $releaseTools | Out-Null
+Copy-Item -Force (Join-Path $repo 'tools\select_button_prompts.ps1') $releaseTools
+$fontHelper = Join-Path $Build 'prompt-font-helper'
+if (-not (Test-Path (Join-Path $fontHelper 'nhl24-font-patch.exe')) -or
+    -not (Test-Path (Join-Path $fontHelper 'ooz.exe'))) {
+    throw 'Font helper missing. Run tools\prompt-font-helper\build.ps1 first.'
+}
+$helperOut = Join-Path $releaseTools 'font-helper'
+New-Item -ItemType Directory -Force $helperOut | Out-Null
+Copy-Item -Force (Join-Path $fontHelper 'nhl24-font-patch.exe'), (Join-Path $fontHelper 'ooz.exe') $helperOut
+$decoderSourceOut = Join-Path $helperOut 'ooz-source'
+New-Item -ItemType Directory -Force $decoderSourceOut | Out-Null
+Get-ChildItem -LiteralPath (Join-Path $fontHelper 'ooz-source') -File | Copy-Item -Destination $decoderSourceOut -Force
 $cfg = Get-Content (Join-Path $Build 'user\config.json') -Raw | ConvertFrom-Json
 foreach ($section in 'Launcher') { if ($cfg.PSObject.Properties[$section]) { $cfg.PSObject.Properties.Remove($section) } }
 if ($cfg.General) {

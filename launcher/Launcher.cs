@@ -14,6 +14,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -575,6 +576,9 @@ namespace NhlPort
         PadAction capturing;
         ComboBox resolutionBox;
         ComboBox promptLayoutBox;
+        bool promptFontHelperWarningShown;
+        string promptFontCheckedLayout;
+        string promptFontCheckedFolder;
         ComboBox fpsCapBox;
         CheckBox ignoreFlipRateBox;
         CheckBox fullscreenBox;
@@ -2261,6 +2265,7 @@ namespace NhlPort
         {
             try
             {
+                ApplyPromptFont();
                 SaveBindings();
                 SaveConfig();
                 return true;
@@ -2270,6 +2275,96 @@ namespace NhlPort
                 MessageBox.Show(this, Loc.F("save_fail", ex.Message), "NHL24 PC", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return false;
             }
+        }
+
+        void ApplyPromptFont()
+        {
+            if (promptLayoutBox == null || !File.Exists(Path.Combine(GameFolder, "eboot.bin"))) return;
+            string layout = promptLayoutBox.SelectedIndex == 1 ? "xbox" :
+                promptLayoutBox.SelectedIndex == 2 ? "nintendo" : "playstation";
+            string folder = Path.GetFullPath(GameFolder);
+            if (layout == promptFontCheckedLayout &&
+                String.Equals(folder, promptFontCheckedFolder, StringComparison.OrdinalIgnoreCase)) return;
+            string helper = Path.Combine(baseDir, "tools", "font-helper", "nhl24-font-patch.exe");
+            if (!File.Exists(helper))
+            {
+                string previous = Convert.ToString(LauncherValue("prompt_font_layout", "playstation"));
+                if (!promptFontHelperWarningShown && (layout != "playstation" || previous != "playstation"))
+                {
+                    MessageBox.Show(this,
+                        "The button artwork will use the selected layout. The controls reference font could not be updated because the font patch tool is missing.",
+                        "NHL24 PC", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    promptFontHelperWarningShown = true;
+                }
+                promptFontCheckedLayout = layout;
+                promptFontCheckedFolder = folder;
+                return;
+            }
+
+            string failure = null;
+            string unsupported = null;
+            using (var progress = new Form { Text = "Updating button prompts", Width = 420, Height = 110,
+                FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
+                ControlBox = false, ShowInTaskbar = false })
+            using (var worker = new BackgroundWorker())
+            {
+                progress.Controls.Add(new Label { Left = 18, Top = 18, Width = 370, Height = 36,
+                    Text = "Updating the game controls reference. Please wait." });
+                worker.DoWork += delegate {
+                    var psi = new ProcessStartInfo(helper) { UseShellExecute = false, CreateNoWindow = true,
+                        WorkingDirectory = baseDir, RedirectStandardError = true,
+                        Arguments = "--game " + QuoteArgument(folder) + " --layout " + layout };
+                    using (var process = Process.Start(psi))
+                    {
+                        string error = process.StandardError.ReadToEnd();
+                        process.WaitForExit();
+                        if (process.ExitCode == 2)
+                            unsupported = String.IsNullOrWhiteSpace(error) ?
+                                "The selected game version is not supported by the font patch tool." : error.Trim();
+                        else if (process.ExitCode != 0)
+                            throw new InvalidOperationException(String.IsNullOrWhiteSpace(error) ?
+                                "The font patch tool exited with code " + process.ExitCode + "." : error.Trim());
+                    }
+                };
+                worker.RunWorkerCompleted += delegate(object sender, RunWorkerCompletedEventArgs e) {
+                    if (e.Error != null) failure = e.Error.Message;
+                    progress.Close();
+                };
+                progress.Shown += delegate { worker.RunWorkerAsync(); };
+                progress.ShowDialog(this);
+            }
+            if (failure != null) throw new InvalidOperationException("Could not update the controls reference. " + failure);
+            if (unsupported != null)
+            {
+                if (!promptFontHelperWarningShown)
+                {
+                    MessageBox.Show(this, "The button artwork will use the selected layout, but the controls reference font was not updated. " + unsupported,
+                        "NHL24 PC", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    promptFontHelperWarningShown = true;
+                }
+                promptFontCheckedLayout = layout;
+                promptFontCheckedFolder = folder;
+                return;
+            }
+            Launcher["prompt_font_layout"] = layout;
+            promptFontCheckedLayout = layout;
+            promptFontCheckedFolder = folder;
+        }
+
+        static string QuoteArgument(string value)
+        {
+            var result = new StringBuilder("\"");
+            int backslashes = 0;
+            foreach (char c in value)
+            {
+                if (c == '\\') { backslashes++; continue; }
+                if (c == '"') result.Append('\\', backslashes * 2 + 1);
+                else result.Append('\\', backslashes);
+                result.Append(c);
+                backslashes = 0;
+            }
+            result.Append('\\', backslashes * 2);
+            return result.Append('"').ToString();
         }
 
         void SaveAllSilently()

@@ -31,7 +31,9 @@ The build includes fixes for texture-cache synchronization, image resizing and c
 
 The fork also supports an optional Utah Mammoth jersey and roster mod when the corresponding files are available. [Utah texture notes](docs/UTAH_CREST_NOTES.md)
 
-In **Advanced → Controls**, choose PlayStation, Xbox, or Nintendo button prompts before launching the game. The Xbox and Nintendo packs replace supported button textures in menus and gameplay. Some controller illustrations and split prompt variants still use the game's original artwork. Button inputs follow the configured controller mapping.
+In **Advanced → Controls**, choose PlayStation, Xbox, or Nintendo button prompts before launching the game. The launcher updates supported button textures and, on the verified EU v1.00 game data, the controls-reference font when you save or play. Close the game before changing layouts. Some controller illustrations retain the game's original artwork. Button inputs follow the configured controller mapping. The standalone `tools\select_button_prompts.ps1` offers the same selection.
+
+The font helper checks the game archives before writing and reports unsupported versions. It records recovery information and restores the original font index for PlayStation. Each change to Xbox or Nintendo appends about 3.3 MB to the game archives, preserving existing data and other mods.
 
 ## In-game settings and trophies
 
@@ -72,6 +74,7 @@ See [PROJECT_STATUS.md](PROJECT_STATUS.md) for implementation notes, known issue
 - **LEVASTAK’s NHL24PC V3.2** supplied the dynamic-resolution patch signatures, the approach for synchronizing an image that overlaps a texel buffer, and the sampler changes for forced anisotropic filtering and mip bias. See commits `bf5d6b8b`, `c9ce4671`, and `1fb3bc6d`.
 - **NVIDIA** provides DLSS and the NGX runtime. DLSS is a trademark of NVIDIA. See [third-party license notices](LICENSES/) for additional dependencies.
 - **Xelu / Those Awesome Guys** created the controller prompt artwork, released under CC0. The prompt textures are adapted from the [Xelu controller prompts](https://github.com/DJLink/Xelu_Free_Controller-Key_Prompts).
+- **Powzix and ooz contributors** created the GPL-3.0-or-later archive decoder used by the prompt font helper. Its source and license are included in `tools/prompt-font-helper/ooz` and the release package. [ooz](https://github.com/powzix/ooz)
 
 Support the parent fork and the original port through their respective pages. [hilals](https://ko-fi.com/hishak) · [HajDEO](https://ko-fi.com/E1E61VGHII)
 
