@@ -136,6 +136,26 @@ void DataBase::Close() {
     LOG_INFO(Render, "Cache dumped");
 }
 
+void DataBase::Reset() {
+    Close();
+    // nhlport: keep the incompatible cache as <cache>.old (one generation) instead of deleting it,
+    // so a driver or profile switch back can restore it by hand.
+    std::error_code ec;
+    auto old_path = cache_path;
+    old_path += ".old";
+    std::filesystem::remove_all(old_path, ec);
+    ec.clear();
+    std::filesystem::rename(cache_path, old_path, ec);
+    if (ec) {
+        LOG_WARNING(Render, "Failed to move cache {} aside: {}", cache_path.string(), ec.message());
+        ec.clear();
+        std::filesystem::remove_all(cache_path, ec);
+    } else {
+        LOG_INFO(Render, "Incompatible pipeline cache kept as {}", old_path.string());
+    }
+    Open();
+}
+
 template <typename T>
 bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector<T>&& v) {
     {
