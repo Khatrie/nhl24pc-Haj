@@ -1,8 +1,18 @@
 # NHL24 PC project status
 
-Updated November 24, 2026. Active branch: `codex/renderer-upstream-fixes`. The working baseline on `main` is checkpointed at `ecfdda3e`. The initial renderer backports and their binaries are committed as `e4a29ac5` and `464a6a1c`. The current checkpoint includes the launcher, timing, renderer, and in-game overlay updates. The Windows Release build and launcher rebuild succeeded, and both local release executables were verified against their build outputs. The user reports the branch is working well in gameplay. Performance gains have not been benchmarked.
+Updated November 27, 2026. Active branch: `performance/cinematic-renderer-overhaul`, created from `codex/renderer-upstream-fixes` at `d2d799b7`. It carries performance checkpoint 1. The changes compile in a clang 18 syntax check but have not been built on Windows, played, or benchmarked. Plans, evidence and handoff notes are in `PERFORMANCE_ROADMAP.md`, `PERFORMANCE_FINDINGS.md` and `AGENT_HANDOFF.md`.
+
+The earlier state of `codex/renderer-upstream-fixes`: the working baseline on `main` is checkpointed at `ecfdda3e`. The initial renderer backports and their binaries are committed as `e4a29ac5` and `464a6a1c`. That checkpoint includes the launcher, timing, renderer, and in-game overlay updates. The user reports it works well in gameplay.
 
 ## Implemented enhancements
+
+- Performance checkpoint 1 (unverified in game):
+  - `NHLPORT_DIAG_DRAW_PHASES=1` records GPU command thread time per draw phase in the frame CSV.
+  - A `vk_rendering_begins` column counts dynamic rendering scopes that actually begin.
+  - The default Utah crest check no longer drains the GPU on every refresh of a matching texture array. It caches layer hashes by guest content when the guest bytes are unchanged across the upload.
+  - The pipeline cache IO thread now drains its queue at shutdown, and its request counter is no longer racy.
+  - The driver pipeline cache is now saved on a worker 10 s after the last runtime compile, and again at shutdown. `NHLPORT_DRIVER_CACHE_AUTOSAVE=0` turns this off.
+  - `tools/perf_report.py` reports sustained slowdowns, workload correlation, per-draw phase costs and build comparisons.
 
 - The launcher Controls tab selects PlayStation, Xbox or Nintendo button prompts for the next game launch. Hash-matched DDS packs load alongside existing texture overrides. Xbox and Nintendo artwork is adapted from Xelu's CC0 controller prompts. Face, shoulder, trigger, menu and selected split-mask variants are included. The Xbox pack loaded and applied several prompt textures in a release session. Controller illustrations and broad gameplay coverage remain to be verified.
 
