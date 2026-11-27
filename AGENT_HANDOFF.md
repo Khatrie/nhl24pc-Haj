@@ -28,9 +28,27 @@ Updated November 27, 2026, 3:20 PM ET. Read this first, then `PERFORMANCE_FINDIN
 | `84f38682` | Per-buffer step timers (sharp, stream/cached obtain, GPU invalidate, access check, special) | **Needs verification run 2 (below)** |
 | `882d2252` | **Stacked logs:** every run appends to the same `nhl24_frames.csv` / `nhl24_threads.csv` / `nhl24_diag.log`; `session` column + `# ===== session <id> =====` marker; `tools/diag_sessions.py`; `perf_report.py --list-sessions / --session / --trend`; `diag_report.py --session` | Helpers tested in a stub build and on real logs; first in-game run pending |
 
+### Ported from HajDEO/nhl24pc (remote `hajdeo`, compared Nov 27)
+
+| Commit | Change | Their commit |
+|---|---|---|
+| `cfd2219f` | Red-zone protection covers 246 more eboot instructions (random `0xc0000005` at `eboot+0x666096a`) and defaults on, with the launcher toggle defaulting to on. Also a save-data fix: unclean exit no longer wipes `param.sfo` ("vanishing rosters"). | `11d63557` |
+| `cd5d203a` | Incompatible pipeline cache is rebuilt instead of ignored forever. The old cache is kept as `<cache>.old`. | `b3e1c572` |
+| `b84c7935` | Driver-internal C++ exceptions no longer treated as crashes. | `b8d98a55` |
+| `6180ccfc` | Texture cache frees idle superseded aliases (VRAM exhaustion on 8 GB cards); GC counts only real deletions. | `6b08321a` (part) |
+
+**Not ported:**
+- Intel/AMD-only fixes: `006cf04e`, `380e0fa1`, `51a6f1ae`, `d83ec81f`.
+- Linux build and CI.
+- `Input.merge_controllers`.
+- The dynamic-resolution image resize; we disable dynamic resolution by game patch instead.
+- **Pending its own checkpoint:** the shared-memory barrier pass for split GCN waves from `6b08321a`. It changes NVIDIA compute shaders (32-wide subgroups) and needs a shader cache version bump, which means a one-time full recompile.
+
+The owner's `config.json` stores `redzone_patches: false`, so the red-zone fix only applies after ticking "Red zone protection" in the launcher.
+
 ### Staged binaries
 
-`release\nhl24.exe` = `build\nhl24.exe` (SHA-256 `88beb447…`), built 4:32 PM Nov 27 from `8fdf1839`, whose source is identical to the measured `fca8b5eb`. The stream-reuse experiment is not in it. Staged with `tools\build_and_stage.cmd`, which kept `config.json` and the input `.ini` files. Rebuild through that script; computer use can start it by double-clicking it in Explorer. Close the launcher first, because staging overwrites `release\launcher.exe`.
+`release\nhl24.exe` = `build\nhl24.exe` (SHA-256 `18ebbdbc…`) and `launcher.exe` (`35d7bf9d…`), built 4:52 PM Nov 27 from `6180ccfc` with `tools\build_and_stage.cmd`, which kept `config.json` and the input `.ini` files and now builds the launcher too. Close the launcher before staging.
 
 ## 2. What was measured
 
