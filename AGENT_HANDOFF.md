@@ -30,7 +30,7 @@ Updated November 27, 2026, 3:20 PM ET. Read this first, then `PERFORMANCE_FINDIN
 
 ### Staged binaries
 
-`release\nhl24.exe` and `build\nhl24.exe` date from 2:54 PM, before `c6e0fe98`. **Rebuild before the next test.**
+`release\nhl24.exe` = `build\nhl24.exe` (SHA-256 `88beb447…`), built 4:32 PM Nov 27 from `8fdf1839`, whose source is identical to the measured `fca8b5eb`. The stream-reuse experiment is not in it. Staged with `tools\build_and_stage.cmd`, which kept `config.json` and the input `.ini` files. Rebuild through that script; computer use can start it by double-clicking it in Explorer. Close the launcher first, because staging overwrites `release\launcher.exe`.
 
 ## 2. What was measured
 

@@ -70,6 +70,12 @@ The earlier state of `codex/renderer-upstream-fixes`: the working baseline on `m
 
 ## Known bugs and bottlenecks
 
+- **Cinematic command-thread cost (November 27, branch `performance/cinematic-renderer-overhaul`).**
+  - Cinematic slowdowns track draw throughput on the GPU command thread, at about 11.5 µs of thread time per draw with profiling off (run `20261127-154844`).
+  - Small read-only buffer binds cost 0.39 µs each, fixed, plus 0.071 µs per KiB, with about 6 per draw. The fixed part is likely cache misses on per-buffer metadata.
+  - Two reuse experiments were rejected: hashed reuse saved nothing, and unhashed reuse was unsound and measured slower. See `PERFORMANCE_FINDINGS.md`.
+  - Diagnostic logs now stack across runs. Track builds with `python tools/perf_report.py release/user/log --trend`.
+
 - **November 24 full-gameplay staging trace:** 22,232 frames, 16.66 ms median, and 33.40 ms p99. The extended idle-retention policy recorded zero retained bytes throughout. The 350 ms arena-loading frame spent 171 ms inside `vmaCreateImage` and 138 ms copying guest data, with no compile or readback wait. A separate 134 ms gameplay frame spent 67 ms copying guest memory into staging, with a 100 MiB request served by a new buffer. Prioritize tracing image allocations during expansion and large staging requests during play.
 
 - **Arena image replacement:** The automatic 10,507-frame run attributed 159 ms of a 400 ms arena-loading frame to expanded-image construction and under 0.1 ms to cache registration. Sampled expansion logs show several one-mip-at-a-time chains, including 512×512 single-layer and 256×256 eight-layer images. Avoid predicting a larger guest footprint without a verified resource layout.
