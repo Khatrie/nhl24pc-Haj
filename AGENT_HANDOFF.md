@@ -26,7 +26,7 @@ Updated November 27, 2026, 3:20 PM ET. Read this first, then `PERFORMANCE_FINDIN
 | `ab71997d`, `3113db94` | Stream-buffer copy reuse experiment and its launch script | Rejected; reverted by `a887b745` and `15b55245` |
 | `c6e0fe98` | Profiling counters moved to a cache-aligned `Diag::C::draw_profile` block, written only while profiling | **Needs verification run 1 (below)** |
 | `84f38682` | Per-buffer step timers (sharp, stream/cached obtain, GPU invalidate, access check, special) | **Needs verification run 2 (below)** |
-| (next commit) | **Stacked logs:** every run appends to the same `nhl24_frames.csv` / `nhl24_threads.csv` / `nhl24_diag.log`; `session` column + `# ===== session <id> =====` marker; `tools/diag_sessions.py`; `perf_report.py --list-sessions / --session / --trend`; `diag_report.py --session` | Helpers tested in a stub build and on real logs; first in-game run pending |
+| `882d2252` | **Stacked logs:** every run appends to the same `nhl24_frames.csv` / `nhl24_threads.csv` / `nhl24_diag.log`; `session` column + `# ===== session <id> =====` marker; `tools/diag_sessions.py`; `perf_report.py --list-sessions / --session / --trend`; `diag_report.py --session` | Helpers tested in a stub build and on real logs; first in-game run pending |
 
 ### Staged binaries
 
