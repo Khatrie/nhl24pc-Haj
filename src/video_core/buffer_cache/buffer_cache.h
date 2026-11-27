@@ -153,6 +153,19 @@ private:
     std::unique_ptr<MemoryTracker> memory_tracker;
 
     StreamBuffer stream_buffer;
+    /// nhlport: NHLPORT_STREAM_DEDUP=1 reuses a small read-only buffer copied earlier in the same
+    /// submission and stream-buffer generation when its guest address, size and contents match.
+    struct StreamCopyEntry {
+        u64 hash{};
+        VAddr address{};
+        u64 offset{};
+        u64 tick{};
+        u64 generation{};
+        u32 size{};
+    };
+    static constexpr size_t STREAM_DEDUP_ENTRIES = 4096;
+    bool stream_dedup{};
+    std::vector<StreamCopyEntry> stream_dedup_cache;
     Buffer gds_buffer;
     RangeSet gpu_modified_ranges;
     /// nhlport: scheduler tick of the newest GPU write per 512 KB window (the readback window

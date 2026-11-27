@@ -124,6 +124,7 @@ inline std::array<std::atomic<u64>, static_cast<size_t>(BindPhase::Count)> bind_
 inline std::atomic<u64> bound_buffers{0};     ///< guest buffers bound to draws and dispatches
 inline std::atomic<u64> bound_textures{0};    ///< image descriptors bound to draws and dispatches
 inline std::atomic<u64> stream_copy_bytes{0}; ///< small read-only buffers copied per bind
+inline std::atomic<u64> stream_reuse_bytes{0}; ///< copies skipped by NHLPORT_STREAM_DEDUP
 } // namespace C
 
 /// Charges the lifetime of the scope to one resource-binding sub-phase while draw phases are on.

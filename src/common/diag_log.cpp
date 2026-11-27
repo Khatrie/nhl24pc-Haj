@@ -124,7 +124,7 @@ struct Counters {
     u64 vk_rendering_begins, draw_phase_total_ns;
     std::array<u64, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns;
     std::array<u64, static_cast<size_t>(BindPhase::Count)> bind_phase_ns;
-    u64 bound_buffers, bound_textures, stream_copy_bytes;
+    u64 bound_buffers, bound_textures, stream_copy_bytes, stream_reuse_bytes;
 };
 
 /// A compute dispatch kind replaced by an emulator fast path (one entry per kind + shader).
@@ -226,6 +226,7 @@ Counters Snapshot() {
         .bound_buffers = ld(C::bound_buffers),
         .bound_textures = ld(C::bound_textures),
         .stream_copy_bytes = ld(C::stream_copy_bytes),
+        .stream_reuse_bytes = ld(C::stream_reuse_bytes),
     };
 }
 
@@ -397,7 +398,7 @@ constexpr const char* FramesHeader =
     "draw_vertex_index_cpu_ms,draw_barriers_cpu_ms,draw_descriptors_cpu_ms,"
     "draw_dynamic_state_cpu_ms,draw_record_cpu_ms,draw_reset_cpu_ms,dispatch_cpu_ms,"
     "bind_buffers_cpu_ms,bind_texture_lookup_cpu_ms,bind_texture_views_cpu_ms,"
-    "bind_samplers_cpu_ms,bound_buffers,bound_textures,stream_copy_kb";
+    "bind_samplers_cpu_ms,bound_buffers,bound_textures,stream_copy_kb,stream_reuse_kb";
 
 #ifdef _WIN32
 u64 FileTimeTo100ns(const FILETIME& ft) {
@@ -1141,6 +1142,7 @@ void Init() {
         "NHLPORT_MIP_MEMO",    "NHLPORT_GPU_INVAL_SMALL", "NHLPORT_META_ERASE",
         "NHLPORT_WRITEDATA_FAULT", "NHLPORT_VTX_KILL",   "NHLPORT_DIAG_FRAMES",
         "NHLPORT_DIAG_INTERVAL", "NHLPORT_WARM_UPLOAD_STAGING", "NHLPORT_DIAG_DRAW_PHASES",
+        "NHLPORT_STREAM_DEDUP",
     };
     std::string env_line;
     for (const char* name : env_names) {
@@ -1727,8 +1729,9 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
             fmt::format_to(std::back_inserter(row), ",{:.3f}",
                            double(cur.bind_phase_ns[i] - p.bind_phase_ns[i]) / 1e6);
         }
-        fmt::format_to(std::back_inserter(row), ",{},{},{}", d(&Counters::bound_buffers),
-                       d(&Counters::bound_textures), d(&Counters::stream_copy_bytes) >> 10);
+        fmt::format_to(std::back_inserter(row), ",{},{},{},{}", d(&Counters::bound_buffers),
+                       d(&Counters::bound_textures), d(&Counters::stream_copy_bytes) >> 10,
+                       d(&Counters::stream_reuse_bytes) >> 10);
         row += '\n';
         std::scoped_lock lk{s.frame_mutex};
         s.frames_buf += row;

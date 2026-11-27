@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <magic_enum/magic_enum.hpp>
+#include <xxhash.h>
 
 #include "common/diag_log.h"
 #include "common/alignment.h"
@@ -61,6 +63,11 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
       stream_buffer{instance, scheduler, MemoryType::Stream, STREAM_BUFFER_SIZE},
       gds_buffer{instance, 0, GDS_BUFFER_SIZE, MemoryType::Stream, "GDS Buffer"},
       transfer_semaphore{instance}, memory_semaphore{instance} {
+    if (const char* env = std::getenv("NHLPORT_STREAM_DEDUP"); env && env[0] == '1') {
+        stream_dedup = true;
+        stream_dedup_cache.resize(STREAM_DEDUP_ENTRIES);
+        LOG_INFO(Render_Vulkan, "Stream buffer copy reuse enabled (NHLPORT_STREAM_DEDUP=1)");
+    }
     // nhlport: readback copies on a second queue (NHLPORT_READBACK_DRAIN=1 restores Finish()).
     {
         const char* env = std::getenv("NHLPORT_READBACK_DRAIN");
@@ -399,6 +406,32 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                                                         ImageBufferTiming* timing) {
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
     if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+        if (stream_dedup) {
+            // Hash exactly the bytes that are uploaded, so a guest write during the copy can
+            // never leave an entry describing different contents.
+            thread_local std::array<u8, STREAM_THRESHOLD> scratch;
+            memory->CopySparseMemory(device_addr, scratch.data(), size);
+            const u64 hash = XXH3_64bits(scratch.data(), size);
+            auto& entry = stream_dedup_cache[(hash ^ (device_addr * 0x9E3779B97F4A7C15ULL) ^ size) &
+                                             (STREAM_DEDUP_ENTRIES - 1)];
+            if (entry.hash == hash && entry.address == device_addr && entry.size == size &&
+                entry.tick == scheduler.CurrentTick() &&
+                entry.generation == stream_buffer.Generation()) {
+                Diag::C::stream_reuse_bytes.fetch_add(size, std::memory_order_relaxed);
+                return {&stream_buffer, entry.offset};
+            }
+            const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
+            std::memcpy(data, scratch.data(), size);
+            stream_buffer.Commit();
+            Diag::C::stream_copy_bytes.fetch_add(size, std::memory_order_relaxed);
+            entry = {.hash = hash,
+                     .address = device_addr,
+                     .offset = offset,
+                     .tick = scheduler.CurrentTick(),
+                     .generation = stream_buffer.Generation(),
+                     .size = size};
+            return {&stream_buffer, offset};
+        }
         const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
         memory->CopySparseMemory(device_addr, data, size);
         stream_buffer.Commit();
