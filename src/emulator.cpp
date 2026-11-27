@@ -481,8 +481,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "General isConnectedToNetwork: {}", EmulatorSettings.IsConnectedToNetwork());
     LOG_INFO(Config, "General isShadNetEnabled: {}", EmulatorSettings.IsShadNetEnabled());
 #ifdef _WIN32
-    LOG_INFO(Config, "General isRedZonePatchingEnabled: {}",
-             EmulatorSettings.IsRedZonePatchingEnabled());
+    LOG_INFO(Config, "General red-zone protection: always on");
 #endif
     LOG_INFO(Config, "General p2pPort: {}", EmulatorSettings.GetP2PPort());
     LOG_INFO(Config, "Log sync: {}", EmulatorSettings.IsLogSync());
@@ -573,11 +572,10 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
 
 #ifdef _WIN32
-    // Enable red-zone patching if the setting is enabled
-    if (EmulatorSettings.IsRedZonePatchingEnabled()) {
-        WindowsGuestRedZoneProtection::SetActiveMode(
-            WindowsGuestRedZoneProtectionMode::StaticPatching);
-    }
+    // nhlport: red-zone protection is always on. NHL 24 crashes at random (0xc0000005, e.g.
+    // eboot+0x666096a while a match loads) without it; the General.redzone_patches setting is
+    // ignored.
+    WindowsGuestRedZoneProtection::SetActiveMode(WindowsGuestRedZoneProtectionMode::StaticPatching);
 #endif
 
     // Create stdin/stdout/stderr

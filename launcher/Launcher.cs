@@ -5,7 +5,7 @@
 //   Advanced – keyboard bindings over a DualShock 4 picture and the full display settings
 // Writes the port's own files:
 //   user\config.json              (GPU section: window size, fullscreen, present mode, FSR/RCAS;
-//                                  General section: redzone_patches (Windows red-zone protection);
+//                                  General section: neo_mode (red-zone protection is always on);
 //                                  Launcher section: language)
 //   user\input_config\default.ini (keyboard bindings; controller bindings stay 1:1)
 //   user\game_path.txt            (eboot.bin of a game folder other than game\ next to the exe)
@@ -93,10 +93,6 @@ namespace NhlPort
             { "aniso_label", new[] { "16x anizotropné filtrovanie (ostrejší ľad a mantinely)", "16x anisotropic filtering (sharper ice & boards)" } },
             { "vsync", new[] { "VSync", "VSync" } },
             { "vsync_desc", new[] { "Synchronizácia s obnovovacou frekvenciou (bez trhania, mierne vyššia odozva).", "Synchronises with the refresh rate (no tearing, slightly more input lag)." } },
-            { "redzone", new[] { "Ochrana red zone (Windows)", "Red zone protection (Windows)" } },
-            { "redzone_desc", new[] { "Chráni hru pred náhodnými pádmi 0xc0000005 (napr. pri načítaní zápasu). Odporúča sa nechať zapnuté. Platí od ďalšieho spustenia.",
-                                      "Protects against random 0xc0000005 crashes (for example while a match loads). Recommended on. Takes effect on the next start." } },
-            { "redzone_short", new[] { "Red zone ✓", "Red zone ✓" } },
             { "stretch_to_fill", new[] { "Vyplniť 21:9 ultrawide (bez čiernych pruhov)", "Stretch to fill 21:9 ultrawide (no black bars)" } },
             { "stretch_to_fill_desc", new[] { "Vykreslí hru aj DLSS na celú šírku monitora bez bočných pruhov. Ideálne pre 3440x1440.",
                                              "Renders the game and DLSS across the full screen with zero black bars. Ideal for 3440x1440." } },
@@ -556,7 +552,6 @@ namespace NhlPort
         GlassSlider sharpBar;
         TransparentLabel sharpValue, pkgReqLabel, summaryLabel, versionLabel, gameVersionLabel, statusLabel;
         CheckBox vsyncQuick;
-        CheckBox redzoneQuick;
         CheckBox stretchQuick;
         FlatButton playButton;
         FlatButton simpleBtn, advancedBtn;
@@ -970,7 +965,7 @@ namespace NhlPort
             return Launcher.TryGetValue(key, out v) ? v : fallback;
         }
 
-        // General section of the emulator: only redzone_patches is edited, the other keys are kept as they are
+        // General section of the emulator: only neo_mode is edited (an old redzone_patches key is dropped), the other keys are kept as they are
         object GeneralValue(string key, object fallback)
         {
             object v;
@@ -1118,9 +1113,9 @@ namespace NhlPort
             // (the built-in sharpness is written as 0 so the two never stack; the slider value is kept).
             Launcher["sharpen_mode"] = sharpenModeBox.SelectedIndex;
             Launcher["builtin_sharpness"] = savedBuiltinSharpness;
-            // Windows static guest red-zone protection of the emulator (src/core/cpu_patches.cpp): fixes the
-            // crash while a match loads when a page-protection fault clobbers the red zone of a leaf function.
-            General["redzone_patches"] = redzoneQuick.Checked;
+            // Red-zone protection (src/core/cpu_patches.cpp) is always on in the emulator now; a value saved by
+            // older launchers is dropped.
+            General.Remove("redzone_patches");
             General["neo_mode"] = neoBox != null ? neoBox.Checked : ToBool(GeneralValue("neo_mode", true), true);
             var ser = new JavaScriptSerializer();
             Directory.CreateDirectory(Path.GetDirectoryName(configPath));
@@ -1336,11 +1331,6 @@ namespace NhlPort
                 Checked = Convert.ToBoolean(GpuValue("stretch_to_fill", false)) };
             quickPanel.Controls.Add(stretchQuick);
             quickPanel.Controls.Add(new TransparentLabel { Left = c1, Top = y + 24, Width = cw + 30, Height = 36, Font = Theme.Small, ForeColor = Color.FromArgb(200, 210, 225), Text = Loc.T("stretch_to_fill_desc") });
-            redzoneQuick = new CheckBox { Left = c2, Top = y, Width = cw + 30, Height = 24, Font = Theme.Body, ForeColor = Color.White, BackColor = Color.Transparent, Text = Loc.T("redzone"),
-                Checked = ToBool(GeneralValue("redzone_patches", true), true) };
-            quickPanel.Controls.Add(redzoneQuick);
-            quickPanel.Controls.Add(new TransparentLabel { Left = c2, Top = y + 24, Width = cw + 30, Height = 36, Font = Theme.Small, ForeColor = Color.FromArgb(200, 210, 225), Text = Loc.T("redzone_desc") });
-            redzoneQuick.CheckedChanged += delegate { RefreshSummary(); };
             stretchQuick.CheckedChanged += delegate { if (stretchBox != null) stretchBox.Checked = stretchQuick.Checked; RefreshSummary(); };
 
             // the quick controls mirror the advanced ones
@@ -1907,7 +1897,6 @@ namespace NhlPort
             parts.Add(Loc.T("vsync") + (vsyncQuick.Checked ? " ✓" : " ✗"));
             parts.Add((neoBox != null ? neoBox.Checked : ToBool(GeneralValue("neo_mode", true), true)) ? "PS4 PRO" : "BASE PS4");
             if (stretchQuick != null && stretchQuick.Checked) parts.Add("21:9 FILL");
-            if (redzoneQuick != null && redzoneQuick.Checked) parts.Add(Loc.T("redzone_short"));
             summaryLabel.Text = string.Join("   •   ", parts.ToArray()).ToUpperInvariant();
         }
 
