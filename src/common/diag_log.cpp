@@ -123,6 +123,8 @@ struct Counters {
     u64 vma_image_create_ns, staging_new_bytes, staging_reused_bytes;
     u64 vk_rendering_begins, draw_phase_total_ns;
     std::array<u64, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns;
+    std::array<u64, static_cast<size_t>(BindPhase::Count)> bind_phase_ns;
+    u64 bound_buffers, bound_textures, stream_copy_bytes;
 };
 
 /// A compute dispatch kind replaced by an emulator fast path (one entry per kind + shader).
@@ -147,6 +149,10 @@ Counters Snapshot() {
     std::array<u64, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns{};
     for (size_t i = 0; i < draw_phase_ns.size(); ++i) {
         draw_phase_ns[i] = ld(C::draw_phase_ns[i]);
+    }
+    std::array<u64, static_cast<size_t>(BindPhase::Count)> bind_phase_ns{};
+    for (size_t i = 0; i < bind_phase_ns.size(); ++i) {
+        bind_phase_ns[i] = ld(C::bind_phase_ns[i]);
     }
     return Counters{
         .gpu_frame = ld(P::gpu_frame),
@@ -216,6 +222,10 @@ Counters Snapshot() {
         .vk_rendering_begins = ld(C::vk_rendering_begins),
         .draw_phase_total_ns = ld(C::draw_phase_total_ns),
         .draw_phase_ns = draw_phase_ns,
+        .bind_phase_ns = bind_phase_ns,
+        .bound_buffers = ld(C::bound_buffers),
+        .bound_textures = ld(C::bound_textures),
+        .stream_copy_bytes = ld(C::stream_copy_bytes),
     };
 }
 
@@ -385,7 +395,9 @@ constexpr const char* FramesHeader =
     "upload_staging_retained_bytes,vk_rendering_begins,draw_total_cpu_ms,draw_filter_cpu_ms,"
     "draw_pipeline_cpu_ms,draw_targets_cpu_ms,draw_resources_cpu_ms,draw_render_state_cpu_ms,"
     "draw_vertex_index_cpu_ms,draw_barriers_cpu_ms,draw_descriptors_cpu_ms,"
-    "draw_dynamic_state_cpu_ms,draw_record_cpu_ms,dispatch_cpu_ms";
+    "draw_dynamic_state_cpu_ms,draw_record_cpu_ms,draw_reset_cpu_ms,dispatch_cpu_ms,"
+    "bind_buffers_cpu_ms,bind_texture_lookup_cpu_ms,bind_texture_views_cpu_ms,"
+    "bind_samplers_cpu_ms,bound_buffers,bound_textures,stream_copy_kb";
 
 #ifdef _WIN32
 u64 FileTimeTo100ns(const FILETIME& ft) {
@@ -1711,6 +1723,12 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
             fmt::format_to(std::back_inserter(row), ",{:.3f}",
                            double(cur.draw_phase_ns[i] - p.draw_phase_ns[i]) / 1e6);
         }
+        for (size_t i = 0; i < cur.bind_phase_ns.size(); ++i) {
+            fmt::format_to(std::back_inserter(row), ",{:.3f}",
+                           double(cur.bind_phase_ns[i] - p.bind_phase_ns[i]) / 1e6);
+        }
+        fmt::format_to(std::back_inserter(row), ",{},{},{}", d(&Counters::bound_buffers),
+                       d(&Counters::bound_textures), d(&Counters::stream_copy_bytes) >> 10);
         row += '\n';
         std::scoped_lock lk{s.frame_mutex};
         s.frames_buf += row;

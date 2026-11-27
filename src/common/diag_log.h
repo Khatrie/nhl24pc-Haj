@@ -40,7 +40,16 @@ enum class DrawPhase : u32 {
     Descriptors,
     DynamicState,
     Record,
+    Reset,
     Dispatch,
+    Count,
+};
+
+enum class BindPhase : u32 {
+    Buffers,
+    TextureLookup,
+    TextureViews,
+    Samplers,
     Count,
 };
 
@@ -111,7 +120,38 @@ inline std::atomic<u64> vk_rendering_begins{0}; ///< dynamic rendering scopes ac
 inline std::atomic<bool> draw_phases_enabled{false};
 inline std::array<std::atomic<u64>, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns{};
 inline std::atomic<u64> draw_phase_total_ns{0};
+inline std::array<std::atomic<u64>, static_cast<size_t>(BindPhase::Count)> bind_phase_ns{};
+inline std::atomic<u64> bound_buffers{0};     ///< guest buffers bound to draws and dispatches
+inline std::atomic<u64> bound_textures{0};    ///< image descriptors bound to draws and dispatches
+inline std::atomic<u64> stream_copy_bytes{0}; ///< small read-only buffers copied per bind
 } // namespace C
+
+/// Charges the lifetime of the scope to one resource-binding sub-phase while draw phases are on.
+class BindPhaseTimer {
+    using Clock = std::chrono::steady_clock;
+
+public:
+    explicit BindPhaseTimer(BindPhase phase_)
+        : phase{phase_}, enabled{C::draw_phases_enabled.load(std::memory_order_relaxed)} {
+        if (enabled) {
+            start = Clock::now();
+        }
+    }
+    ~BindPhaseTimer() {
+        if (enabled) {
+            C::bind_phase_ns[static_cast<size_t>(phase)].fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count(),
+                std::memory_order_relaxed);
+        }
+    }
+    BindPhaseTimer(const BindPhaseTimer&) = delete;
+    BindPhaseTimer& operator=(const BindPhaseTimer&) = delete;
+
+private:
+    BindPhase phase;
+    bool enabled;
+    Clock::time_point start{};
+};
 
 /// Sequential phase timer for one draw or dispatch: Mark() charges the time since the previous
 /// mark to a phase; the destructor charges the whole call to the total.

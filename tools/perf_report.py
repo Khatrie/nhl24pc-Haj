@@ -52,8 +52,11 @@ WINDOW_SUMS = [
 ]
 
 DRAW_PHASES = ["filter", "pipeline", "targets", "resources", "render_state", "vertex_index",
-               "barriers", "descriptors", "dynamic_state", "record"]
+               "barriers", "descriptors", "dynamic_state", "record", "reset"]
+BIND_PHASES = ["buffers", "texture_lookup", "texture_views", "samplers"]
 WINDOW_SUMS += [f"draw_{p}_cpu_ms" for p in DRAW_PHASES] + ["dispatch_cpu_ms"]
+WINDOW_SUMS += [f"bind_{p}_cpu_ms" for p in BIND_PHASES]
+WINDOW_SUMS += ["bound_buffers", "bound_textures", "stream_copy_kb"]
 
 
 def fnum(value):
@@ -386,6 +389,26 @@ def report(name, frames, windows, threads, top):
             b = per_draw(slow, key) if slow else 0.0
             ms = sum(w[key] for w in slow) / len(slow) if slow else 0.0
             L.append(f"| {label} | {a:.2f} | {b:.2f} | {ms:.1f} |")
+        if "bind_buffers_cpu_ms" in COLUMNS:
+            L.append("\nResource binding (draws and dispatches):\n")
+            L.append("| Sub-phase | ok µs/draw | slow µs/draw | slow µs/item |")
+            L.append("|---|---:|---:|---:|")
+            items = {"buffers": "bound_buffers", "texture_lookup": "bound_textures",
+                     "texture_views": "bound_textures"}
+            for p in BIND_PHASES:
+                key = f"bind_{p}_cpu_ms"
+                a = per_draw(ok, key) if ok else 0.0
+                b = per_draw(slow, key) if slow else 0.0
+                n = sum(w[items[p]] for w in slow) if p in items and slow else 0
+                per_item = 1000.0 * sum(w[key] for w in slow) / n if n else float("nan")
+                L.append(f"| {p} | {a:.2f} | {b:.2f} | {per_item:.2f} |")
+            for label, ws in (("ok", ok), ("slow", slow)):
+                d = sum(w["draws"] + w["dispatches"] for w in ws)
+                if d:
+                    L.append(f"\n- {label}: {sum(w['bound_buffers'] for w in ws) / d:.1f} buffers and"
+                             f" {sum(w['bound_textures'] for w in ws) / d:.1f} textures per draw/dispatch,"
+                             f" {sum(w['stream_copy_kb'] for w in ws) / len(ws) / 1024:.0f} MiB/s copied"
+                             " into the stream buffer")
         for label, ws in (("ok", ok), ("slow", slow)):
             if ws:
                 disp = sum(w["dispatch_cpu_ms"] for w in ws) / len(ws)

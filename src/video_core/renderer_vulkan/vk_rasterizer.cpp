@@ -17,6 +17,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include "video_core/perf_counters.h"
@@ -283,8 +284,9 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         LogDrawTrace(is_indexed ? "drawi" : "draw", pipeline,
                      &pipeline->GetStage(Shader::SwStage::Fragment));
     }
-    ResetBindings(false);
     phases.Mark(Diag::DrawPhase::Record);
+    ResetBindings(false);
+    phases.Mark(Diag::DrawPhase::Reset);
 }
 
 void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 stride,
@@ -383,8 +385,9 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     if (VideoCore::Perf::draw_trace.load(std::memory_order_relaxed)) {
         LogDrawTrace("drawind", pipeline, &pipeline->GetStage(Shader::SwStage::Fragment));
     }
-    ResetBindings(false);
     phases.Mark(Diag::DrawPhase::Record);
+    ResetBindings(false);
+    phases.Mark(Diag::DrawPhase::Reset);
 }
 
 void Rasterizer::DispatchDirect() {
@@ -1247,6 +1250,8 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
 
 void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data) {
+    const Diag::BindPhaseTimer timer{Diag::BindPhase::Buffers};
+    Diag::C::bound_buffers.fetch_add(stage.buffers.size(), std::memory_order_relaxed);
     const u64 alignment = instance.StorageMinAlignment();
     for (const auto& desc : stage.buffers) {
         const auto src_access =
@@ -1348,6 +1353,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
     boost::container::small_vector<u32, 8> image_descriptor_array_sizes;
 
     u32 num_images{};
+    std::optional<Diag::BindPhaseTimer> lookup_timer{std::in_place, Diag::BindPhase::TextureLookup};
     for (const auto& image_desc : stage.images) {
         const auto tsharp = image_desc.GetSharp(stage);
         const auto data_fmt = tsharp.GetDataFmt();
@@ -1409,6 +1415,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         const char* v = std::getenv("NHLPORT_LOG_BIND");
         return v && *v && *v != '0';
     }();
+    lookup_timer.reset();
+    Diag::C::bound_textures.fetch_add(num_images, std::memory_order_relaxed);
+    std::optional<Diag::BindPhaseTimer> view_timer{std::in_place, Diag::BindPhase::TextureViews};
     std::string bind_desc;
     u64 bind_key = 0;
     // Second pass to re-bind images that were updated after binding
@@ -1495,6 +1504,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         }
     }
 
+    view_timer.reset();
+    const Diag::BindPhaseTimer sampler_timer{Diag::BindPhase::Samplers};
     u32 image_info_idx = first_image_idx;
     u32 image_binding_idx = 0;
     for (u32 array_size : image_descriptor_array_sizes) {
