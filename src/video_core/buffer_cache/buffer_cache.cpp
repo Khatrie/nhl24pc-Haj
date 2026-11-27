@@ -402,7 +402,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
         memory->CopySparseMemory(device_addr, data, size);
         stream_buffer.Commit();
-        Diag::C::stream_copy_bytes.fetch_add(size, std::memory_order_relaxed);
+        Diag::CountProfile(Diag::C::draw_profile.stream_copy_bytes, size);
         return {&stream_buffer, offset};
     }
     const u64 first_block = device_addr >> block_shift;

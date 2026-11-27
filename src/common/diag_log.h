@@ -116,30 +116,45 @@ inline std::atomic<u64> cs_image_copy{0};  ///< dispatches replaced by an image 
 inline std::atomic<u64> cs_image_clear{0}; ///< dispatches replaced by an image clear
 inline std::atomic<u64> cs_hle{0};         ///< dispatches executed by a HLE shader implementation
 inline std::atomic<u64> vk_rendering_begins{0}; ///< dynamic rendering scopes actually begun
-/// CPU time of the GPU command thread per draw/dispatch phase; NHLPORT_DIAG_DRAW_PHASES=1.
-inline std::atomic<bool> draw_phases_enabled{false};
-inline std::array<std::atomic<u64>, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns{};
-inline std::atomic<u64> draw_phase_total_ns{0};
-inline std::array<std::atomic<u64>, static_cast<size_t>(BindPhase::Count)> bind_phase_ns{};
-inline std::atomic<u64> bound_buffers{0};     ///< guest buffers bound to draws and dispatches
-inline std::atomic<u64> bound_textures{0};    ///< image descriptors bound to draws and dispatches
-inline std::atomic<u64> stream_copy_bytes{0}; ///< small read-only buffers copied per bind
+/// Profiling counters of the GPU command thread (NHLPORT_DIAG_DRAW_PHASES=1). The block has
+/// cache lines of its own and is only written while profiling, so a normal session never touches
+/// it and the counters never share a line with ones other threads update.
+struct alignas(64) DrawProfile {
+    std::atomic<bool> enabled{false};
+    alignas(64) std::array<std::atomic<u64>, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns{};
+    std::atomic<u64> draw_phase_total_ns{0};
+    std::array<std::atomic<u64>, static_cast<size_t>(BindPhase::Count)> bind_phase_ns{};
+    std::atomic<u64> bound_buffers{0};     ///< guest buffers bound to draws and dispatches
+    std::atomic<u64> bound_textures{0};    ///< image descriptors bound to draws and dispatches
+    std::atomic<u64> stream_copy_bytes{0}; ///< small read-only buffers copied per bind
+};
+inline DrawProfile draw_profile{};
 } // namespace C
+
+[[nodiscard]] inline bool DrawProfiling() {
+    return C::draw_profile.enabled.load(std::memory_order_relaxed);
+}
+
+/// Adds to a profiling counter only while NHLPORT_DIAG_DRAW_PHASES=1.
+inline void CountProfile(std::atomic<u64>& counter, u64 value) {
+    if (DrawProfiling()) {
+        counter.fetch_add(value, std::memory_order_relaxed);
+    }
+}
 
 /// Charges the lifetime of the scope to one resource-binding sub-phase while draw phases are on.
 class BindPhaseTimer {
     using Clock = std::chrono::steady_clock;
 
 public:
-    explicit BindPhaseTimer(BindPhase phase_)
-        : phase{phase_}, enabled{C::draw_phases_enabled.load(std::memory_order_relaxed)} {
+    explicit BindPhaseTimer(BindPhase phase_) : phase{phase_}, enabled{DrawProfiling()} {
         if (enabled) {
             start = Clock::now();
         }
     }
     ~BindPhaseTimer() {
         if (enabled) {
-            C::bind_phase_ns[static_cast<size_t>(phase)].fetch_add(
+            C::draw_profile.bind_phase_ns[static_cast<size_t>(phase)].fetch_add(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count(),
                 std::memory_order_relaxed);
         }
@@ -159,15 +174,15 @@ class DrawPhaseTimer {
     using Clock = std::chrono::steady_clock;
 
 public:
-    DrawPhaseTimer() : enabled{C::draw_phases_enabled.load(std::memory_order_relaxed)} {
+    DrawPhaseTimer() : enabled{DrawProfiling()} {
         if (enabled) {
             start = last = Clock::now();
         }
     }
     ~DrawPhaseTimer() {
         if (enabled) {
-            C::draw_phase_total_ns.fetch_add(Nanoseconds(start, Clock::now()),
-                                             std::memory_order_relaxed);
+            C::draw_profile.draw_phase_total_ns.fetch_add(Nanoseconds(start, Clock::now()),
+                                                          std::memory_order_relaxed);
         }
     }
     DrawPhaseTimer(const DrawPhaseTimer&) = delete;
@@ -178,8 +193,8 @@ public:
             return;
         }
         const auto now = Clock::now();
-        C::draw_phase_ns[static_cast<size_t>(phase)].fetch_add(Nanoseconds(last, now),
-                                                               std::memory_order_relaxed);
+        C::draw_profile.draw_phase_ns[static_cast<size_t>(phase)].fetch_add(
+            Nanoseconds(last, now), std::memory_order_relaxed);
         last = now;
     }
 

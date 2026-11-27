@@ -112,7 +112,48 @@ Only one one-second window looked like an intentional guest 30 FPS cadence. The 
 - **The driver `.vkcache` was saved only after startup warm-up.** Fixed in this branch.
 - **The pipeline cache IO thread dropped queued writes at shutdown, and its request counter was a data race.** A lost decrement left the thread spinning on an empty queue. Fixed in this branch.
 
+## Measured GPU command thread cost per draw (November 27 runs, `NHLPORT_DIAG_DRAW_PHASES=1`)
+
+Run `phases2 11-27-26` (build `3113db94`, FIFO, 1080p windowed, RCAS on), slow windows. Totals include timer overhead and the counter regression described below:
+
+| Phase | µs/draw |
+|---|---:|
+| Resource binding | 7.7 |
+| — buffers (about 12 per draw, 0.42 µs each) | 5.5 |
+| — texture lookup (about 6.4 per draw, 0.19 µs each) | 1.3 |
+| — texture views and layout transitions | 0.8 |
+| — samplers | 0.1 |
+| Pipeline lookup | 1.6 |
+| Descriptor push | 1.2 |
+| Command recording | 0.9 |
+| Per-draw cleanup (`ResetBindings`) | 0.6 |
+| Vertex/index binding | 0.6 |
+| Everything else | 0.9 |
+| **All draw work** | **14.8** |
+
+- **Render passes are not churning.** Real dynamic-rendering begins run at about 0.09 per draw.
+- **Small read-only buffers are copied into the stream buffer on every draw.** That is about 15 KiB per draw, roughly 1 GiB/s in cinematics.
+- **Bytes are not the cost; per-buffer handling is.**
+
+### Regression from always-on profiling counters (fixed)
+
+The sub-phase commit (`7944dcfe`) updated shared atomic counters about 15 times per draw even with profiling off. Median command-thread cost per draw in windows with at least 40k draws/s:
+
+| Build | µs/draw |
+|---|---:|
+| Baseline / checkpoint 1 | 11.5 / 11.4 |
+| Checkpoint 1 with profiling | 12.2 |
+| `7944dcfe`, profiling off | 13.6 |
+| `3113db94`, profiling on | 15.0 |
+
+The likely cause is cache-line sharing with counters written by other threads. The counters now live in a separate cache-aligned block and are updated only while profiling. This fix still needs a gameplay check.
+
 ## Rejected or deprioritized hypotheses
+
+- **Reusing identical stream-buffer copies within a submission (`NHLPORT_STREAM_DEDUP`, removed).**
+  - 70% of the bytes were reusable.
+  - Binding cost was unchanged: 7.3 µs per draw with reuse, 7.7 µs without.
+  - Hashing each buffer costs as much as the copy it saves.
 
 - **Disk streaming as the main cause.** 327 of 527 frames over 50 ms read no files, and correlation with FPS is −0.05.
 - **Shader compilation as the cause of recurring cinematic slowdowns.** Slow windows average 2.5 ms of compilation per second, and 455 of 477 frames over 50 ms compiled nothing.

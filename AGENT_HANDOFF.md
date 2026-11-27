@@ -25,6 +25,22 @@ See the table in `PERFORMANCE_ROADMAP.md`. In short:
   - The container cannot reach `android.googlesource.com` or GitHub archive downloads.
 - **Windows (clang-cl, `tools/build_nhlport.ps1`):** not yet built. This must be done on the owner's machine. The cloud workspace's device shell is a Linux VM and cannot run MSVC/clang-cl.
 
+## Status after the November 27 profiling runs
+
+- Archived runs are in `release/user/log/<name>`:
+  - `baseline 11-26-26`
+  - `checkpoint1 11-27-26`
+  - `phases1 11-27-26`
+  - `subphase-off 11-27-26`
+  - `dedup 11-27-26`
+  - `phases2 11-27-26`
+- Per-draw phase findings are in `PERFORMANCE_FINDINGS.md`.
+- The stream-copy reuse experiment was removed (no gain).
+- Always-on profiling counters added about 2 µs per draw. They are now gated and isolated, which needs one verification run with profiling off.
+- **Launching:** use `tools\run_draw_phase_profile.cmd` for profiling runs. The launcher does not pass the variable itself.
+- **Staging:** `tools\make_release.ps1` now keeps `release\user\config.json` and the input mappings.
+- **Crash:** one straight-to-desktop crash happened on build `091a7bfb`, with no dump and no log error. Its cause is unknown, and it has not recurred.
+
 ## Immediate next action
 
 1. The owner builds the Windows Release and runs the checkpoint 1 gameplay test (`PERFORMANCE_ROADMAP.md`).

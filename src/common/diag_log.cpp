@@ -148,11 +148,11 @@ Counters Snapshot() {
     }
     std::array<u64, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns{};
     for (size_t i = 0; i < draw_phase_ns.size(); ++i) {
-        draw_phase_ns[i] = ld(C::draw_phase_ns[i]);
+        draw_phase_ns[i] = ld(C::draw_profile.draw_phase_ns[i]);
     }
     std::array<u64, static_cast<size_t>(BindPhase::Count)> bind_phase_ns{};
     for (size_t i = 0; i < bind_phase_ns.size(); ++i) {
-        bind_phase_ns[i] = ld(C::bind_phase_ns[i]);
+        bind_phase_ns[i] = ld(C::draw_profile.bind_phase_ns[i]);
     }
     return Counters{
         .gpu_frame = ld(P::gpu_frame),
@@ -220,12 +220,12 @@ Counters Snapshot() {
         .staging_new_bytes = ld(C::staging_new_bytes),
         .staging_reused_bytes = ld(C::staging_reused_bytes),
         .vk_rendering_begins = ld(C::vk_rendering_begins),
-        .draw_phase_total_ns = ld(C::draw_phase_total_ns),
+        .draw_phase_total_ns = ld(C::draw_profile.draw_phase_total_ns),
         .draw_phase_ns = draw_phase_ns,
         .bind_phase_ns = bind_phase_ns,
-        .bound_buffers = ld(C::bound_buffers),
-        .bound_textures = ld(C::bound_textures),
-        .stream_copy_bytes = ld(C::stream_copy_bytes),
+        .bound_buffers = ld(C::draw_profile.bound_buffers),
+        .bound_textures = ld(C::draw_profile.bound_textures),
+        .stream_copy_bytes = ld(C::draw_profile.stream_copy_bytes),
     };
 }
 
@@ -1096,8 +1096,8 @@ void Init() {
         return;
     }
     s.frames_csv = env_on("NHLPORT_DIAG_FRAMES", true);
-    C::draw_phases_enabled.store(env_on("NHLPORT_DIAG_DRAW_PHASES", false),
-                                 std::memory_order_relaxed);
+    C::draw_profile.enabled.store(env_on("NHLPORT_DIAG_DRAW_PHASES", false),
+                                  std::memory_order_relaxed);
     if (const char* v = std::getenv("NHLPORT_DIAG_INTERVAL"); v && *v) {
         s.interval_s = std::clamp(std::atof(v), 1.0, 600.0);
     }

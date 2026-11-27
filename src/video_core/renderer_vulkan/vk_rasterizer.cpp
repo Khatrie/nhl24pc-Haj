@@ -1251,7 +1251,7 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
 void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data) {
     const Diag::BindPhaseTimer timer{Diag::BindPhase::Buffers};
-    Diag::C::bound_buffers.fetch_add(stage.buffers.size(), std::memory_order_relaxed);
+    Diag::CountProfile(Diag::C::draw_profile.bound_buffers, stage.buffers.size());
     const u64 alignment = instance.StorageMinAlignment();
     for (const auto& desc : stage.buffers) {
         const auto src_access =
@@ -1416,7 +1416,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         return v && *v && *v != '0';
     }();
     lookup_timer.reset();
-    Diag::C::bound_textures.fetch_add(num_images, std::memory_order_relaxed);
+    Diag::CountProfile(Diag::C::draw_profile.bound_textures, num_images);
     std::optional<Diag::BindPhaseTimer> view_timer{std::in_place, Diag::BindPhase::TextureViews};
     std::string bind_desc;
     u64 bind_key = 0;
