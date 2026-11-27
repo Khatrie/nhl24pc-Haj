@@ -1169,7 +1169,252 @@ void WriteFinalSummary(State& s, const char* reason) {
     WriteStamped(s, "final", NewWarnings(s, 40, true));
 }
 
+
+#ifdef _WIN32
+// nhlport: sampling profiler of the GPU command processor thread (NHLPORT_CP_SAMPLE=1).
+//
+// A thread suspends the command thread NHLPORT_CP_SAMPLE_HZ times a second (default 500), reads
+// its context, unwinds up to MaxFrames frames and resumes it. Unwinding uses RUNTIME_FUNCTION
+// tables cached per module plus RtlVirtualUnwind, which reads only unwind data and the target's
+// stack: no loader or heap lock is taken while the thread is suspended, so the sampler cannot
+// deadlock against it. Samples are counted per (second of the session, call stack) and written at
+// shutdown to log/nhl24_cp_samples-<session>.txt; tools/cp_profile.py turns them into reports with
+// the linker map (build/nhl24.map).
+namespace CpSampler {
+
+constexpr u32 MaxFrames = 32;
+
+struct ModuleInfo {
+    u64 base{};
+    u64 end{};
+    const RUNTIME_FUNCTION* pdata{};
+    u32 pdata_count{};
+    std::string path;
+};
+
+std::atomic<HANDLE> target{nullptr};
+std::atomic<bool> stop{false};
+std::thread thread;
+std::vector<ModuleInfo> modules; // sorted by base; written only by the sampler thread
+
+void RefreshModules() {
+    std::vector<ModuleInfo> found;
+    HMODULE handles[1024];
+    DWORD needed = 0;
+    const HANDLE process = GetCurrentProcess();
+    if (!EnumProcessModules(process, handles, sizeof(handles), &needed)) {
+        return;
+    }
+    const DWORD count = std::min<DWORD>(needed / sizeof(HMODULE), 1024);
+    for (DWORD i = 0; i < count; ++i) {
+        MODULEINFO mi{};
+        if (!GetModuleInformation(process, handles[i], &mi, sizeof(mi))) {
+            continue;
+        }
+        ModuleInfo m;
+        m.base = reinterpret_cast<u64>(mi.lpBaseOfDll);
+        m.end = m.base + mi.SizeOfImage;
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(m.base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(m.base + dos->e_lfanew);
+        const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        if (dir.VirtualAddress && dir.Size) {
+            m.pdata = reinterpret_cast<const RUNTIME_FUNCTION*>(m.base + dir.VirtualAddress);
+            m.pdata_count = dir.Size / sizeof(RUNTIME_FUNCTION);
+        }
+        wchar_t wpath[MAX_PATH];
+        const DWORD len = GetModuleFileNameW(handles[i], wpath, MAX_PATH);
+        if (len > 0) {
+            const int n = WideCharToMultiByte(CP_UTF8, 0, wpath, int(len), nullptr, 0, nullptr,
+                                              nullptr);
+            m.path.resize(size_t(n));
+            WideCharToMultiByte(CP_UTF8, 0, wpath, int(len), m.path.data(), n, nullptr, nullptr);
+        }
+        found.push_back(std::move(m));
+    }
+    std::sort(found.begin(), found.end(),
+              [](const ModuleInfo& a, const ModuleInfo& b) { return a.base < b.base; });
+    modules = std::move(found);
+}
+
+const ModuleInfo* FindModule(u64 pc) {
+    auto it = std::upper_bound(modules.begin(), modules.end(), pc,
+                               [](u64 v, const ModuleInfo& m) { return v < m.base; });
+    if (it == modules.begin()) {
+        return nullptr;
+    }
+    --it;
+    return pc < it->end ? &*it : nullptr;
+}
+
+const RUNTIME_FUNCTION* FindFunction(const ModuleInfo& m, u64 pc) {
+    if (!m.pdata) {
+        return nullptr;
+    }
+    const u32 rva = static_cast<u32>(pc - m.base);
+    u32 lo = 0, hi = m.pdata_count;
+    while (lo < hi) {
+        const u32 mid = (lo + hi) / 2;
+        const auto& f = m.pdata[mid];
+        if (rva < f.BeginAddress) {
+            hi = mid;
+        } else if (rva >= f.EndAddress) {
+            lo = mid + 1;
+        } else {
+            return &f;
+        }
+    }
+    return nullptr;
+}
+
+/// Unwinds a suspended thread's context. Lock-free: only module tables and the stack are read.
+u32 Unwind(CONTEXT ctx, std::array<u64, MaxFrames>& pcs, bool& unknown_module) {
+    u32 n = 0;
+    unknown_module = false;
+    while (n < MaxFrames) {
+        const u64 pc = ctx.Rip;
+        if (pc == 0) {
+            break;
+        }
+        pcs[n++] = pc;
+        const ModuleInfo* m = FindModule(pc);
+        if (!m) {
+            unknown_module = true;
+            break; // guest or generated code: no unwind data
+        }
+        // Above the leaf, pc is a return address: look up the call instruction (pc - 1), which
+        // can be the last instruction of the caller's function.
+        const RUNTIME_FUNCTION* f = FindFunction(*m, n > 1 ? pc - 1 : pc);
+        if (!f) {
+            // Only the interrupted frame can be a leaf function without unwind data; its return
+            // address is at [rsp].
+            if (n > 1 || ctx.Rsp == 0 || (ctx.Rsp & 7) != 0) {
+                break;
+            }
+            ctx.Rip = *reinterpret_cast<const u64*>(ctx.Rsp);
+            ctx.Rsp += 8;
+            continue;
+        }
+        void* handler_data = nullptr;
+        DWORD64 establisher = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, m->base, pc, const_cast<RUNTIME_FUNCTION*>(f), &ctx,
+                         &handler_data, &establisher, nullptr);
+    }
+    return n;
+}
+
+void Run(u32 hz, std::filesystem::path out_path, std::string session_id, Clock::time_point t0) {
+    Common::SetCurrentThreadName("nhlport:CpSampler");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    RefreshModules();
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                          TIMER_ALL_ACCESS);
+    const LONGLONG period_100ns = std::max<LONGLONG>(1, 10'000'000LL / hz);
+
+    std::unordered_map<std::string, u32> stack_ids;
+    std::vector<std::string> stacks;
+    std::unordered_map<u64, u32> counts; // (second << 24) | stack id
+    u64 samples = 0, failed = 0, unknown = 0;
+    double suspended_us = 0.0;
+    auto last_refresh = Clock::now();
+    std::array<u64, MaxFrames> pcs{};
+
+    while (!stop.load(std::memory_order_relaxed)) {
+        if (timer) {
+            LARGE_INTEGER due;
+            due.QuadPart = -period_100ns;
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, 1000);
+        } else {
+            Sleep(std::max<DWORD>(1, 1000 / hz));
+        }
+        const HANDLE h = target.load(std::memory_order_acquire);
+        if (!h) {
+            continue;
+        }
+        const auto now = Clock::now();
+        if (now - last_refresh > std::chrono::seconds(10)) {
+            RefreshModules(); // late-loaded driver modules
+            last_refresh = now;
+        }
+        const auto before = Clock::now();
+        if (SuspendThread(h) == static_cast<DWORD>(-1)) {
+            ++failed;
+            continue;
+        }
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        u32 n = 0;
+        bool unknown_module = false;
+        if (GetThreadContext(h, &ctx)) {
+            n = Unwind(ctx, pcs, unknown_module);
+        }
+        ResumeThread(h);
+        suspended_us +=
+            std::chrono::duration<double, std::micro>(Clock::now() - before).count();
+        if (n == 0) {
+            ++failed;
+            continue;
+        }
+        ++samples;
+        unknown += unknown_module ? 1 : 0;
+        std::string key(reinterpret_cast<const char*>(pcs.data()), n * sizeof(u64));
+        auto [it, is_new] = stack_ids.try_emplace(std::move(key), u32(stacks.size()));
+        if (is_new) {
+            stacks.push_back(it->first);
+        }
+        const u64 second = static_cast<u64>(std::chrono::duration<double>(before - t0).count());
+        ++counts[(second << 24) | it->second];
+    }
+    if (timer) {
+        CloseHandle(timer);
+    }
+    RefreshModules();
+
+    std::FILE* f = OpenFile(out_path);
+    if (!f) {
+        return;
+    }
+    std::fprintf(f,
+                 "# nhl24 cp samples v1 session %s hz %u samples %llu failed %llu "
+                 "unknown_module %llu suspended_us %.0f\n",
+                 session_id.c_str(), hz, static_cast<unsigned long long>(samples),
+                 static_cast<unsigned long long>(failed), static_cast<unsigned long long>(unknown),
+                 suspended_us);
+    for (const auto& m : modules) {
+        std::fprintf(f, "module %llx %llx %s\n", static_cast<unsigned long long>(m.base),
+                     static_cast<unsigned long long>(m.end - m.base), m.path.c_str());
+    }
+    for (size_t id = 0; id < stacks.size(); ++id) {
+        std::fprintf(f, "stack %zu", id);
+        const auto* p = reinterpret_cast<const u64*>(stacks[id].data());
+        for (size_t i = 0; i < stacks[id].size() / sizeof(u64); ++i) {
+            std::fprintf(f, " %llx", static_cast<unsigned long long>(p[i]));
+        }
+        std::fputc('\n', f);
+    }
+    for (const auto& [k, c] : counts) {
+        std::fprintf(f, "count %llu %llu %u\n", static_cast<unsigned long long>(k >> 24),
+                     static_cast<unsigned long long>(k & 0xffffff), c);
+    }
+    std::fclose(f);
+}
+
+} // namespace CpSampler
+#endif
+
 } // namespace
+
+void RegisterGpuCommandThread() {
+#ifdef _WIN32
+    HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                          FALSE, GetCurrentThreadId());
+    if (h) {
+        if (HANDLE old = CpSampler::target.exchange(h)) {
+            CloseHandle(old);
+        }
+    }
+#endif
+}
 
 bool Enabled() {
     return S().enabled.load(std::memory_order_relaxed);
@@ -1266,7 +1511,8 @@ void Init() {
         "NHLPORT_MIP_MEMO",    "NHLPORT_GPU_INVAL_SMALL", "NHLPORT_META_ERASE",
         "NHLPORT_WRITEDATA_FAULT", "NHLPORT_VTX_KILL",   "NHLPORT_DIAG_FRAMES",
         "NHLPORT_DIAG_INTERVAL", "NHLPORT_WARM_UPLOAD_STAGING", "NHLPORT_DIAG_DRAW_PHASES",
-        "NHLPORT_DIAG_APPEND", "NHLPORT_DIAG_STACK_MB",
+        "NHLPORT_DIAG_APPEND", "NHLPORT_DIAG_STACK_MB", "NHLPORT_CP_SAMPLE",
+        "NHLPORT_CP_SAMPLE_HZ",
     };
     std::string env_line;
     for (const char* name : env_names) {
@@ -1294,6 +1540,18 @@ void Init() {
     s.enabled.store(true, std::memory_order_release);
     s.sampler = std::thread(SamplerThread);
     s.gpu_poll = std::thread(GpuPollThread);
+#ifdef _WIN32
+    if (env_on("NHLPORT_CP_SAMPLE", false)) {
+        u32 hz = 500;
+        if (const char* v = std::getenv("NHLPORT_CP_SAMPLE_HZ"); v && *v) {
+            hz = std::clamp<u32>(static_cast<u32>(std::strtoul(v, nullptr, 10)), 10, 2000);
+        }
+        const auto out = dir / fmt::format("nhl24_cp_samples-{}.txt", s.session_id);
+        CpSampler::stop.store(false, std::memory_order_relaxed);
+        CpSampler::thread = std::thread(CpSampler::Run, hz, out, s.session_id, s.t0);
+        WriteLine(s, fmt::format("# cp sampler: {} Hz -> {}", hz, out.filename().string()));
+    }
+#endif
     LOG_INFO(Config, "nhlport diag log: {}", (dir / "nhl24_diag.log").string());
 }
 
@@ -1320,6 +1578,12 @@ void Shutdown(const char* reason) {
         return;
     }
     s.enabled.store(false, std::memory_order_release);
+#ifdef _WIN32
+    if (CpSampler::thread.joinable()) {
+        CpSampler::stop.store(true, std::memory_order_relaxed);
+        CpSampler::thread.join();
+    }
+#endif
     s.gpu_poll_stop.store(true, std::memory_order_relaxed);
     if (s.gpu_poll.joinable()) {
         s.gpu_poll.join();

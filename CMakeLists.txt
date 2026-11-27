@@ -1463,6 +1463,8 @@ if (WIN32)
     # nhlport: GUI subsystem so no console window opens with the game; main() stays the entry point
     if (MSVC)
         target_link_options(shadps4 PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+        # nhlport: linker map (function addresses) for tools/cp_profile.py; changes no code.
+        target_link_options(shadps4 PRIVATE "/MAP:$<TARGET_FILE_DIR:shadps4>/nhl24.map")
     else()
         target_link_options(shadps4 PRIVATE -Wl,--subsystem,windows -Wl,-e,mainCRTStartup)
     endif()

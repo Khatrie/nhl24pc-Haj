@@ -254,6 +254,10 @@ bool Enabled();
 /// Opens the files and starts the sampler thread. Needs the user directory (log path).
 void Init();
 
+/// Called on the GPU command processor thread: the target of the sampling profiler
+/// (NHLPORT_CP_SAMPLE=1, Windows).
+void RegisterGpuCommandThread();
+
 /// Writes the final summary and closes the files. Safe to call several times / from any thread.
 void Shutdown(const char* reason);
 
