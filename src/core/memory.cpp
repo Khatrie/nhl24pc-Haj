@@ -14,6 +14,10 @@
 #include "core/memory.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
+#include <array>
+#define XXH_STATIC_LINKING_ONLY
+#include <xxhash.h>
+
 namespace Core {
 
 MemoryManager::MemoryManager() {
@@ -180,6 +184,46 @@ void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
         dest += run_size;
         offset = 0;
     }
+}
+
+u64 MemoryManager::HashSparseMemory(VAddr virtual_addr, u64 size) {
+    constexpr u64 page_size = 1ULL << AddressSpace::Traits::PAGE_BITS;
+    static constexpr std::array<u8, page_size> zero_page{};
+    const auto& backing_pages = impl.BackingPages();
+    const auto backing_for_page = [&backing_pages](u64 page) -> const u8* {
+        const auto* entry = backing_pages.find(page);
+        return entry ? *entry : nullptr;
+    };
+
+    XXH3_state_t state;
+    XXH3_64bits_reset(&state);
+    u64 page = virtual_addr / page_size;
+    u64 offset = virtual_addr % page_size;
+    const u8* next_backing = backing_for_page(page);
+    while (size) {
+        const u8* source = next_backing ? next_backing + offset : nullptr;
+        u64 run_size = std::min(page_size - offset, size);
+        while (run_size < size) {
+            next_backing = backing_for_page(++page);
+            if (next_backing != (source ? source + run_size : nullptr)) {
+                break;
+            }
+            run_size += std::min(page_size, size - run_size);
+        }
+
+        if (source) {
+            XXH3_64bits_update(&state, source, run_size);
+        } else {
+            for (u64 left = run_size; left;) {
+                const u64 chunk = std::min(left, page_size);
+                XXH3_64bits_update(&state, zero_page.data(), chunk);
+                left -= chunk;
+            }
+        }
+        size -= run_size;
+        offset = 0;
+    }
+    return XXH3_64bits_digest(&state);
 }
 
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {

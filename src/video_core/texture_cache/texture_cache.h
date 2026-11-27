@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <array>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
@@ -380,7 +382,7 @@ private:
     void DownloadImageMemory(ImageId image_id, bool sync = false);
     void DumpImageToDisk(Image& image);
     void ApplyPortraitOverride(Image& image);
-    void ApplyTextureOverride(Image& image);
+    void ApplyTextureOverride(Image& image, u64 guest_hash_before_upload = 0);
     void InstallPortrait(Image& image, u32 player_id);
     void RefreshPortraitOnBind(Image& image);
 
@@ -436,6 +438,9 @@ private:
     TileManager tile_manager;
     absl::flat_hash_map<u64, SamplerId> samplers;
     absl::flat_hash_set<ImageId> download_images;
+    static constexpr size_t MaxArrayLayerHashes = 4096;
+    std::mutex array_hash_mutex;
+    std::unordered_map<u64, std::array<u64, 4>> array_layer_hashes;
     u64 total_used_memory = 0;
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;

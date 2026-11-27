@@ -1010,30 +1010,65 @@ void TextureCache::ApplyPortraitOverride(Image& image) {
     InstallPortrait(image, multi ? 0 : DetectSelectedPlayerId(true));
 }
 
-void TextureCache::ApplyTextureOverride(Image& image) {
+static const std::string& ArrayBlankSpec() {
+    static const std::string blank_spec = [] {
+        const char* v = std::getenv("NHLPORT_ARRAY_BLANK");
+        std::string s(v ? v : "");
+        if (s.empty()) {
+            // Same spec from <user>/array_blank.txt (first line), so it survives without env vars.
+            std::ifstream in(Common::FS::GetUserPath(Common::FS::PathType::UserDir) /
+                             "array_blank.txt");
+            std::getline(in, s);
+            while (!s.empty() && (s.back() == '\r' || s.back() == ' ' || s.back() == '\t')) {
+                s.pop_back();
+            }
+        }
+        if (s.empty()) {
+            // Default: hide the leftover Coyotes chest crest / shoulder patches on Utah jerseys
+            // (hashes below), leaving every other team's crest layers alone.
+            s = "512x512:Bc3Srgb:0f:H";
+        }
+        return s;
+    }();
+    return blank_spec;
+}
+
+static bool IsArrayBlankHashCandidate(const ImageInfo& ai, bool render_target) {
+    if (ai.resources.layers <= 1 || ai.props.is_volume || ai.props.is_depth || ai.num_samples > 1 ||
+        render_target) {
+        return false;
+    }
+    const std::string& spec = ArrayBlankSpec();
+    const std::string size = fmt::format("{}x{}", ai.size.width, ai.size.height);
+    const std::string format = vk::to_string(ai.pixel_format);
+    size_t pos = 0;
+    while (pos < spec.size()) {
+        size_t end = spec.find(';', pos);
+        if (end == std::string::npos)
+            end = spec.size();
+        const std::string_view item = std::string_view{spec}.substr(pos, end - pos);
+        pos = end + 1;
+        const size_t c1 = item.find(':');
+        const size_t c2 = c1 == std::string_view::npos ? c1 : item.find(':', c1 + 1);
+        const size_t c3 = c2 == std::string_view::npos ? c2 : item.find(':', c2 + 1);
+        if (c3 == std::string_view::npos || item.size() <= c3 + 1 || item[c3 + 1] != 'H')
+            continue;
+        if (item.substr(0, c1) != size)
+            continue;
+        if (format.find(item.substr(c1 + 1, c2 - c1 - 1)) == std::string::npos)
+            continue;
+        return true;
+    }
+    return false;
+}
+
+void TextureCache::ApplyTextureOverride(Image& image, u64 guest_hash_before_upload) {
     // nhlport debug: NHLPORT_ARRAY_BLANK="WxH:FormatSubstr:layerMaskHex;..." zeroes the chosen layers
     // (all mips) of matching texture arrays, so we can find which array layer draws the Coyotes crest.
     // NHLPORT_ARRAY_LOG=1 logs every array image seen.
     {
         const auto& ai = image.info;
-        static const std::string blank_spec = [] {
-            const char* v = std::getenv("NHLPORT_ARRAY_BLANK");
-            std::string s(v ? v : "");
-            if (s.empty()) {
-                // Same spec from <user>/array_blank.txt (first line), so it survives without env vars.
-                std::ifstream in(Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "array_blank.txt");
-                std::getline(in, s);
-                while (!s.empty() && (s.back() == '\r' || s.back() == ' ' || s.back() == '\t')) {
-                    s.pop_back();
-                }
-            }
-            if (s.empty()) {
-                // Default: hide the leftover Coyotes chest crest / shoulder patches on Utah jerseys
-                // (hashes below), leaving every other team's crest layers alone.
-                s = "512x512:Bc3Srgb:0f:H";
-            }
-            return s;
-        }();
+        const std::string& blank_spec = ArrayBlankSpec();
         static const bool arr_log = [] {
             const char* v = std::getenv("NHLPORT_ARRAY_LOG");
             return v && *v && *v != '0';
@@ -1083,13 +1118,40 @@ void TextureCache::ApplyTextureOverride(Image& image) {
                 const u32 abh = Common::DivCeil(ah, u32(aby));
                 const u32 absz = vk::blockSize(ai.pixel_format);
                 const u64 zsize = u64(abw) * abh * absz;
-                const auto zbuf = runtime.GetStagingPool().Request(zsize, MemoryType::HostUncached, 16, false);
-                std::memset(zbuf.mapped, 0, zsize);
-                zbuf.buffer->Flush(zbuf.offset, zsize);
                 std::vector<vk::BufferImageCopy> zc;
                 const u32 lv = u32(ai.resources.levels);
-                u64 layer_hash[4]{};
-                {
+                std::array<u64, 4> layer_hash{};
+                // The hashed mip is uploaded from guest memory whenever the guest range is not
+                // GPU-modified, so its contents follow from the guest bytes and the image layout.
+                u64 content_key = 0;
+                bool hashes_known = false;
+                const u64 guest_hash =
+                    by_hash && guest_hash_before_upload != 0 &&
+                            !buffer_cache.IsRegionGpuModified(ai.guest_address, ai.guest_size)
+                        ? Core::Memory::Instance()->HashSparseMemory(ai.guest_address,
+                                                                     ai.guest_size)
+                        : 0;
+                if (guest_hash != 0 && guest_hash == guest_hash_before_upload) {
+                    const std::array<u32, 9> layout{u32(ai.pixel_format),
+                                                    aw,
+                                                    ah,
+                                                    u32(ai.resources.layers),
+                                                    lv,
+                                                    ai.guest_size,
+                                                    u32(ai.tile_mode),
+                                                    u32(ai.array_mode),
+                                                    ai.pitch};
+                    content_key = HashCombine(
+                        HashCombine(guest_hash, XXH3_64bits(layout.data(), sizeof(layout))),
+                        XXH3_64bits(ai.mips_layout.data(), sizeof(ai.mips_layout)));
+                    std::scoped_lock lk{array_hash_mutex};
+                    if (const auto it = array_layer_hashes.find(content_key);
+                        it != array_layer_hashes.end()) {
+                        layer_hash = it->second;
+                        hashes_known = true;
+                    }
+                }
+                if (!hashes_known) {
                     const u32 hm = std::min<u32>(2, lv - 1);
                     const u32 hw = std::max(aw >> hm, 1u);
                     const u32 hh = std::max(ah >> hm, 1u);
@@ -1117,6 +1179,15 @@ void TextureCache::ApplyTextureOverride(Image& image) {
                     for (u32 l = 0; l < nl; ++l) {
                         layer_hash[l] = XXH3_64bits(static_cast<const u8*>(hbuf.mapped) + l * hsz, hsz);
                     }
+                    if (content_key) {
+                        std::scoped_lock lk{array_hash_mutex};
+                        if (array_layer_hashes.size() >= MaxArrayLayerHashes) {
+                            array_layer_hashes.clear();
+                        }
+                        array_layer_hashes.emplace(content_key, layer_hash);
+                    }
+                }
+                {
                     static std::mutex hl_mtx;
                     static std::unordered_set<u64> hl_seen;
                     std::scoped_lock lk{hl_mtx};
@@ -1144,7 +1215,7 @@ void TextureCache::ApplyTextureOverride(Image& image) {
                         const u32 mw = std::max(aw >> m, 1u);
                         const u32 mh = std::max(ah >> m, 1u);
                         zc.push_back({
-                            .bufferOffset = zbuf.offset,
+                            .bufferOffset = 0,
                             .bufferRowLength = 0,
                             .bufferImageHeight = 0,
                             .imageSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -1157,6 +1228,13 @@ void TextureCache::ApplyTextureOverride(Image& image) {
                     }
                 }
                 if (!zc.empty()) {
+                    const auto zbuf = runtime.GetStagingPool().Request(
+                        zsize, MemoryType::HostUncached, 16, false);
+                    std::memset(zbuf.mapped, 0, zsize);
+                    zbuf.buffer->Flush(zbuf.offset, zsize);
+                    for (auto& copy : zc) {
+                        copy.bufferOffset = zbuf.offset;
+                    }
                     scheduler.EndRendering();
                     runtime.UploadImage(&image, zbuf.buffer, zc);
                     LOG_INFO(Render, "ARRAYBLANK {}x{} {} mask {:x} @ {:#x} ({} copies)", aw, ah, afmt, mask,
@@ -2470,6 +2548,12 @@ void TextureCache::RefreshImage(Image& image, bool expanding) {
     using Clock = std::chrono::steady_clock;
     const bool measure = Diag::Enabled();
     ImageBufferTiming source_timing;
+    const u64 guest_hash_before_upload =
+        IsArrayBlankHashCandidate(image.info, image.usage.render_target) &&
+                !buffer_cache.IsRegionGpuModified(image.info.guest_address, image.info.guest_size)
+            ? Core::Memory::Instance()->HashSparseMemory(image.info.guest_address,
+                                                         image.info.guest_size)
+            : 0;
     const auto buffer_start = measure ? Clock::now() : Clock::time_point{};
     const auto [in_buffer, in_offset] = buffer_cache.ObtainBufferForImage(
         image.info.guest_address, image.info.guest_size, measure ? &source_timing : nullptr);
@@ -2502,7 +2586,7 @@ void TextureCache::RefreshImage(Image& image, bool expanding) {
         source_total.sync_ns.fetch_add(source_timing.sync_ns, std::memory_order_relaxed);
     }
     ApplyPortraitOverride(image);
-    ApplyTextureOverride(image);
+    ApplyTextureOverride(image, guest_hash_before_upload);
     DumpImageToDisk(image);
 }
 
