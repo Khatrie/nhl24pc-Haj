@@ -44,11 +44,11 @@ Updated November 27, 2026, 3:20 PM ET. Read this first, then `PERFORMANCE_FINDIN
 - The dynamic-resolution image resize; we disable dynamic resolution by game patch instead.
 - **Pending its own checkpoint:** the shared-memory barrier pass for split GCN waves from `6b08321a`. It changes NVIDIA compute shaders (32-wide subgroups) and needs a shader cache version bump, which means a one-time full recompile.
 
-The owner's `config.json` stores `redzone_patches: false`, so the red-zone fix only applies after ticking "Red zone protection" in the launcher.
+Red-zone protection is always on since `adb7ff53`. The emulator ignores `redzone_patches`, both toggles are gone, and the launcher drops the old key on save.
 
 ### Staged binaries
 
-`release\nhl24.exe` = `build\nhl24.exe` (SHA-256 `18ebbdbc…`) and `launcher.exe` (`35d7bf9d…`), built 4:52 PM Nov 27 from `6180ccfc` with `tools\build_and_stage.cmd`, which kept `config.json` and the input `.ini` files and now builds the launcher too. Close the launcher before staging.
+`release\nhl24.exe` and `release\launcher.exe` match `build\` byte for byte, built 5:00 PM Nov 27 from `adb7ff53` with `tools\build_and_stage.cmd`, which kept `config.json` and the input `.ini` files and builds the launcher too. Close the launcher before staging.
 
 ## 2. What was measured
 
