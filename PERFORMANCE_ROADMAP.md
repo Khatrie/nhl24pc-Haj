@@ -7,6 +7,7 @@ Integration branch: `performance/cinematic-renderer-overhaul`, from `d2d799b7`. 
 | Change | Default / toggle | Result |
 |---|---|---|
 | Session analysis tool `tools/perf_report.py` | n/a | In use for every run |
+| Stacked diagnostic logs across runs, `--trend` / `--session` / `--list-sessions` | On; `NHLPORT_DIAG_APPEND=0` disables, `NHLPORT_DIAG_STACK_MB` caps file size (default 1024) | Tested offline; first in-game run pending |
 | Per-draw phase timers, binding sub-phases, per-buffer steps | `NHLPORT_DIAG_DRAW_PHASES=1` (launch with `tools\run_draw_phase_profile.cmd`) | Attributed about 11.4 µs/draw on the command thread |
 | `vk_rendering_begins` counter | Always on | Render-pass churn ruled out (0.09 begins per draw) |
 | Array-blank crest check content cache | On | Crest still hidden; no FPS change (it was not the bottleneck) |
@@ -57,7 +58,7 @@ Deprioritized: filesystem AIO (correlation with FPS is −0.05) and render-pass/
 
 ## Gameplay test protocol
 
-See `AGENT_HANDOFF.md` §4. Use the same settings every run (FIFO, 1080p windowed, RCAS on). Launch through the profiling script when phase data is needed. Archive every run, and compare µs per draw rather than raw totals.
+See `AGENT_HANDOFF.md` §4. Use the same settings every run (FIFO, 1080p windowed, RCAS on). Launch through the profiling script when phase data is needed. Runs stack in the same log files; track them with `perf_report.py --trend` and compare µs per draw rather than raw totals.
 
 Visual checks after texture or binding changes:
 - the Utah crest is hidden,

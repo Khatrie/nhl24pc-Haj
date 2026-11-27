@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Report from the nhlport diagnostic log (nhl24_frames.csv + nhl24_diag.log + nhl24_threads.csv).
 
-    python tools/diag_report.py <dir or nhl24_frames.csv> [--top N] [--stutter MS] [--csv out.csv]
+    python tools/diag_report.py <dir or nhl24_frames.csv> [--session SEL] [--top N] [--stutter MS]
+                                [--csv out.csv]
+    python tools/diag_report.py <dir> --list-sessions
+
+The game stacks every run into the same log files; the report covers the latest run unless
+--session picks others (latest, all, last:N, or session IDs; see tools/diag_sessions.py).
 
 <dir> is a directory holding nhl24_frames.csv / nhl24_diag.log / nhl24_threads.csv (the game's
 user/log folder or a logs/ copy made by run_nhl24.ps1, where the files carry a run stamp prefix).
@@ -18,6 +23,9 @@ import re
 import statistics
 import sys
 from collections import Counter, defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import diag_sessions  # noqa: E402
 
 
 def find_files(target):
@@ -49,19 +57,17 @@ def to_float(value):
         return 0.0
 
 
-def load_frames(path):
+def load_frames(path, sessions=None):
     rows = []
-    with open(path, newline="", encoding="utf-8", errors="replace") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            parsed = {}
-            for key, value in row.items():
-                if key is None:
-                    continue
-                parsed[key] = value if key == "flags" else to_float(value)
-            if parsed.get("flags") is None:
-                parsed["flags"] = ""
-            rows.append(parsed)
+    for row in diag_sessions.iter_rows(path, sessions):
+        parsed = {}
+        for key, value in row.items():
+            if key is None:
+                continue
+            parsed[key] = value if key in ("flags", "session") else to_float(value)
+        if parsed.get("flags") is None:
+            parsed["flags"] = ""
+        rows.append(parsed)
     return rows
 
 
@@ -227,27 +233,25 @@ def report_glitches(rows):
     print("flag totals: " + "  ".join(f"{k}:{v}" for k, v in sorted(flag_counts.items())))
 
 
-def report_log(diag_log, rows, top):
+def report_log(diag_log, rows, top, sessions=None):
     if not diag_log:
         return
     events = defaultdict(list)
     header = []
     last = None  # (category, index) of the previous event, for continuation lines
-    with open(diag_log, encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if line.startswith("#"):
-                header.append(line)
-                continue
-            m = re.match(r"\[\s*([0-9.]+)\] (\w+): (.*)", line)
-            if m:
-                events[m.group(2)].append((float(m.group(1)), m.group(3)))
-                last = (m.group(2), len(events[m.group(2)]) - 1)
-            elif line.startswith("    ") and last:
-                # Multi-line event (worst frames, warning sites, markers): keep the whole block.
-                cat, idx = last
-                t, msg = events[cat][idx]
-                events[cat][idx] = (t, msg + "\n" + line)
+    for line in diag_sessions.log_lines(diag_log, sessions):
+        if line.startswith("#"):
+            header.append(line)
+            continue
+        m = re.match(r"\[\s*([0-9.]+)\] (\w+): (.*)", line)
+        if m:
+            events[m.group(2)].append((float(m.group(1)), m.group(3)))
+            last = (m.group(2), len(events[m.group(2)]) - 1)
+        elif line.startswith("    ") and last:
+            # Multi-line event (worst frames, warning sites, markers): keep the whole block.
+            cat, idx = last
+            t, msg = events[cat][idx]
+            events[cat][idx] = (t, msg + "\n" + line)
     section("Session")
     for line in header[:12]:
         print(line)
@@ -303,13 +307,12 @@ def report_log(diag_log, rows, top):
         print(warn[-1])
 
 
-def report_threads(threads_csv, top):
+def report_threads(threads_csv, top, sessions=None):
     if not threads_csv:
         return
     totals = defaultdict(list)
-    with open(threads_csv, newline="", encoding="utf-8", errors="replace") as handle:
-        for row in csv.DictReader(handle):
-            totals[row["name"]].append(to_float(row["cpu_pct"]))
+    for row in diag_sessions.iter_rows(threads_csv, sessions):
+        totals[row["name"]].append(to_float(row["cpu_pct"]))
     section("Thread CPU (average of the sampled seconds, 100 = one core)")
     rows = sorted(((statistics.fmean(v), max(v), name) for name, v in totals.items()), reverse=True)
     for avg, peak, name in rows[:top]:
@@ -322,22 +325,32 @@ def main():
     parser.add_argument("--top", type=int, default=20, help="rows in the stutter / compile tables")
     parser.add_argument("--stutter", type=float, default=50.0, help="stutter threshold in ms")
     parser.add_argument("--csv", help="write the stutter frames to this CSV")
+    parser.add_argument("--session", default="latest",
+                        help="latest (default), all, last:N, or session IDs (stacked logs)")
+    parser.add_argument("--list-sessions", action="store_true", help="list the stacked runs")
     args = parser.parse_args()
 
     frames_csv, diag_log, threads_csv = find_files(args.target)
     if not frames_csv:
         print(f"no nhl24_frames.csv found at {args.target}", file=sys.stderr)
         return 2
-    rows = load_frames(frames_csv)
+    if args.list_sessions:
+        print(diag_sessions.list_text(frames_csv, diag_log))
+        return 0
+    sessions = diag_sessions.select(args.session, [sid for sid, _, _ in diag_sessions.scan(frames_csv)])
+    if len(sessions) > 1:
+        print("note: several runs selected; per-frame times restart at each run", file=sys.stderr)
+    rows = load_frames(frames_csv, sessions)
     if not rows:
         print("no frames in the CSV", file=sys.stderr)
         return 2
     print(f"frames: {frames_csv}\ndiag:   {diag_log}\nthreads: {threads_csv}")
+    print(f"session: {', '.join(sessions)}")
     report_frames(rows, args.top, args.stutter)
     report_resolution(rows)
     report_glitches(rows)
-    report_threads(threads_csv, args.top)
-    report_log(diag_log, rows, args.top)
+    report_threads(threads_csv, args.top, sessions)
+    report_log(diag_log, rows, args.top, sessions)
     if args.csv:
         stutters = [r for r in rows if r["dt_ms"] > args.stutter or "S" in r["flags"]]
         with open(args.csv, "w", newline="", encoding="utf-8") as handle:

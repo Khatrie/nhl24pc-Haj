@@ -26,6 +26,7 @@ Updated November 27, 2026, 3:20 PM ET. Read this first, then `PERFORMANCE_FINDIN
 | `ab71997d`, `3113db94` | Stream-buffer copy reuse experiment and its launch script | Rejected; reverted by `a887b745` and `15b55245` |
 | `c6e0fe98` | Profiling counters moved to a cache-aligned `Diag::C::draw_profile` block, written only while profiling | **Needs verification run 1 (below)** |
 | `84f38682` | Per-buffer step timers (sharp, stream/cached obtain, GPU invalidate, access check, special) | **Needs verification run 2 (below)** |
+| (next commit) | **Stacked logs:** every run appends to the same `nhl24_frames.csv` / `nhl24_threads.csv` / `nhl24_diag.log`; `session` column + `# ===== session <id> =====` marker; `tools/diag_sessions.py`; `perf_report.py --list-sessions / --session / --trend`; `diag_report.py --session` | Helpers tested in a stub build and on real logs; first in-game run pending |
 
 ### Staged binaries
 
@@ -63,7 +64,7 @@ All numbers come from real owner sessions; nothing is estimated. Details are in 
 ## 3. Immediate next actions
 
 1. **Owner rebuilds:** `tools\build_nhlport.ps1`, then `tools\make_release.ps1`. Check that the script prints "Keeping existing …config.json".
-2. **Verification run 1 (profiling off):** normal launcher, the usual Be a Pro sequence with F1 markers. Archive the run to `release/user/log/<name>/` before the next run overwrites it. Expected result: median command-thread cost per draw is back to about 11.4 µs. Compute it with the per-draw snippet in §5.
+2. **Verification run 1 (profiling off):** normal launcher, the usual Be a Pro sequence with F1 markers. Runs now stack in the same files, so no archiving is needed. Expected result: median command-thread cost per draw is back to about 11.4 µs. Compute it with the per-draw snippet in §5.
 3. **Verification run 2 (profiling on):** launch with `tools\run_draw_phase_profile.cmd`. Confirm `NHLPORT_DIAG_DRAW_PHASES=1` appears in the header of `nhl24_diag.log`. The report's "Buffer binding steps" table says which step owns the 5.5 µs.
 4. **Optimize the dominant buffer step:**
    - **If it is `obtain_stream`:** cut per-buffer overhead in the stream path of `BufferCache::ObtainBuffer`: the region check, `Map`/`Commit` bookkeeping and the sparse copy setup. A plan to batch per stage is in the roadmap.
@@ -80,10 +81,18 @@ All numbers come from real owner sessions; nothing is estimated. Details are in 
   - Always check the `# environment overrides:` line.
   - The `# port:` line names the build that actually ran. Check it: once, an unstaged build ran the old exe.
 - **Scene:** Be a Pro with arena load, anthem, faceoff, goals and replays, and F1 at the start of each cinematic.
-- **Analysis:** run `python tools/perf_report.py <log dir> [--compare <dir>]`.
-  - `--compare` compares raw totals and is misleading for sessions of different length.
-  - Compare per-second rates, or command-thread µs per draw, instead.
-- **Archive every run.** Existing archives in `release/user/log/`:
+- **Logs stack across runs** (since the stacked-logs commit). The game appends every run to `release/user/log/nhl24_frames.csv`, `nhl24_threads.csv` and `nhl24_diag.log`:
+  - Every CSV row starts with a `session` column (the run's local start time, e.g. `20261127-153100`). The diag log starts each run with `# ===== session <id> =====`.
+  - When a build changes the CSV columns, or a file passes 1 GiB (`NHLPORT_DIAG_STACK_MB`), the old file is renamed `nhl24_frames.until-<id>.csv` and a new one starts. Nothing is deleted.
+  - `NHLPORT_DIAG_APPEND=0` restores one fresh set per run.
+  - Pre-stacking loose logs are moved aside the same way on the first run of the new build.
+- **Analysis:**
+  - `python tools/perf_report.py release/user/log --list-sessions` lists runs, with their build and env overrides.
+  - `python tools/perf_report.py release/user/log --trend` prints one row per run: FPS, P99, sustained-slow seconds and **CP µs/draw** (the bottleneck metric, computed automatically). Use it to track builds over many sessions.
+  - `python tools/perf_report.py release/user/log [--session latest|all|last:N|<id or unique part>]` gives the full report. It defaults to the latest run.
+  - `--compare <dir> --compare-session <sel>` compares two runs, including two runs in the same stack. Raw totals mislead for runs of different length, so prefer CP µs/draw (now in the comparison table) and per-second rates.
+  - `diag_report.py` takes the same `--session` and `--list-sessions`.
+- **Older per-run archives** in `release/user/log/` still work with every tool (they read as session `-`):
 
   | Folder | Build | Notes |
   |---|---|---|

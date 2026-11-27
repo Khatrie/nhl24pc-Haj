@@ -243,6 +243,7 @@ struct State {
     std::atomic<bool> initialized{false};
     std::atomic<bool> shutdown_done{false};
     bool frames_csv = true;
+    std::string session_id; ///< first column of every CSV row; separates stacked runs
     double interval_s = 10.0;
     Clock::time_point t0{};
 
@@ -354,6 +355,101 @@ std::FILE* OpenFile(const std::filesystem::path& path) {
 #else
     return std::fopen(path.c_str(), "wb");
 #endif
+}
+
+std::FILE* OpenAppend(const std::filesystem::path& path) {
+#ifdef _WIN32
+    return _wfopen(path.c_str(), L"ab");
+#else
+    return std::fopen(path.c_str(), "ab");
+#endif
+}
+
+/// Local start time of this run, e.g. 20261127-153100. Sorts in run order.
+std::string SessionId() {
+    const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y%m%d-%H%M%S", &tm);
+    return buf;
+}
+
+/// nhlport: path an old stacked log is moved to (nhl24_frames.csv ->
+/// nhl24_frames.until-<session>.csv). Nothing is ever deleted.
+std::filesystem::path AsidePath(const std::filesystem::path& path, const std::string& session_id) {
+    std::error_code ec;
+    for (int i = 0; i < 1000; ++i) {
+        std::string name = path.stem().string() + ".until-" + session_id;
+        if (i) {
+            name += fmt::format("-{}", i);
+        }
+        auto target = path.parent_path() / (name + path.extension().string());
+        if (!std::filesystem::exists(target, ec)) {
+            return target;
+        }
+    }
+    return {};
+}
+
+/// nhlport: opens a log that accumulates across runs so gameplay can be tracked over many
+/// sessions. An existing file is appended to when it starts with the same header (CSV) and is
+/// below the size cap; otherwise it is moved aside and a new file is started. A changed header
+/// (a build that adds columns) therefore never mixes two layouts in one file.
+std::FILE* OpenStacked(std::filesystem::path path, std::string_view header, bool append,
+                       u64 max_bytes, const std::string& session_id,
+                       std::string_view first_line_prefix = {}) {
+    std::error_code ec;
+    if (append && std::filesystem::exists(path, ec)) {
+        const u64 size = std::filesystem::file_size(path, ec);
+        bool compatible = !ec && size > 0 && size < max_bytes;
+        char last = '\n';
+        if (compatible) {
+            std::ifstream in{path, std::ios::binary};
+            if (!header.empty() || !first_line_prefix.empty()) {
+                std::string first;
+                std::getline(in, first);
+                if (!first.empty() && first.back() == '\r') {
+                    first.pop_back();
+                }
+                compatible = header.empty() ? first.starts_with(first_line_prefix) : first == header;
+            }
+            in.clear();
+            in.seekg(-1, std::ios::end);
+            in.get(last);
+        }
+        if (compatible) {
+            if (auto* f = OpenAppend(path)) {
+                // A run that crashed mid-row leaves no newline; keep the next row on its own line.
+                if (last != '\n') {
+                    std::fputc('\n', f);
+                }
+                return f;
+            }
+        } else if (!ec && size > 0) {
+            const auto aside = AsidePath(path, session_id);
+            if (aside.empty()) {
+                path = path.parent_path() /
+                       (path.stem().string() + "." + session_id + path.extension().string());
+            } else {
+                std::filesystem::rename(path, aside, ec);
+                if (ec) {
+                    // Could not move it (open elsewhere?): leave it and write beside it.
+                    path = aside;
+                }
+            }
+        }
+    }
+    auto* f = OpenFile(path);
+    if (f && !header.empty()) {
+        std::fwrite(header.data(), 1, header.size(), f);
+        std::fputc('\n', f);
+    }
+    return f;
 }
 
 /// Writes a line to the diag log (already formatted, without the timestamp).
@@ -857,7 +953,8 @@ void SamplerThread() {
             std::string rows;
             for (const auto& th : s.thread_samples) {
                 if (th.alive && th.pct >= 0.5) {
-                    rows += fmt::format("{:.1f},{},\"{}\",{:.1f}\n", t, th.tid, th.name, th.pct);
+                    rows += fmt::format("{},{:.1f},{},\"{}\",{:.1f}\n", s.session_id, t, th.tid,
+                                       th.name, th.pct);
                 }
             }
             if (!rows.empty()) {
@@ -1113,29 +1210,46 @@ void Init() {
         s.interval_s = std::clamp(std::atof(v), 1.0, 600.0);
     }
     const auto dir = Common::FS::GetUserPath(Common::FS::PathType::LogDir);
-    s.log = OpenFile(dir / "nhl24_diag.log");
+    // nhlport: logs stack across runs (every CSV row starts with this run's session id, and the
+    // diag log gets a "# ===== session <id> =====" line). NHLPORT_DIAG_APPEND=0 starts fresh
+    // files every run; NHLPORT_DIAG_STACK_MB caps each file before it is moved aside.
+    const bool append = env_on("NHLPORT_DIAG_APPEND", true);
+    u64 stack_mb = 1024;
+    if (const char* v = std::getenv("NHLPORT_DIAG_STACK_MB"); v && *v) {
+        stack_mb = std::clamp<u64>(std::strtoull(v, nullptr, 10), 16, 16384);
+    }
+    const u64 max_bytes = stack_mb << 20;
+    s.session_id = SessionId();
+    // A diag log from a build before stacking has no session marker and is moved aside.
+    s.log = OpenStacked(dir / "nhl24_diag.log", {}, append, max_bytes, s.session_id,
+                        "# ===== session ");
     if (!s.log) {
         LOG_ERROR(Config, "nhlport diag log: cannot open {}", (dir / "nhl24_diag.log").string());
         return;
     }
     if (s.frames_csv) {
-        s.frames = OpenFile(dir / "nhl24_frames.csv");
-        if (s.frames) {
-            std::fputs(FramesHeader, s.frames);
-            std::fputc('\n', s.frames);
-        }
+        const std::string header = std::string{"session,"} + FramesHeader;
+        s.frames = OpenStacked(dir / "nhl24_frames.csv", header, append, max_bytes, s.session_id);
     }
-    s.threads = OpenFile(dir / "nhl24_threads.csv");
-    if (s.threads) {
-        std::fputs("t_s,tid,name,cpu_pct\n", s.threads);
-    }
+    s.threads = OpenStacked(dir / "nhl24_threads.csv", "session,t_s,tid,name,cpu_pct", append,
+                            max_bytes, s.session_id);
     s.t0 = Clock::now();
     s.worst.reserve(WorstFrames + 1);
     s.dts.reserve(1 << 16);
     s.prev_proc_100ns = ProcessCpu100ns();
     s.prev_page_faults = ProcessMemory().page_faults;
 
+    {
+        std::error_code size_ec;
+        if (std::filesystem::file_size(dir / "nhl24_diag.log", size_ec) > 0 && !size_ec) {
+            WriteLine(s, ""); // blank line between stacked sessions
+        }
+    }
+    WriteLine(s, fmt::format("# ===== session {} =====", s.session_id));
     WriteLine(s, "# NHL24 PC diagnostic log");
+    WriteLine(s, fmt::format("# session: {} (logs {}; analyse with tools/perf_report.py "
+                             "--list-sessions / --session / --trend)",
+                             s.session_id, append ? "stack across runs" : "fresh this run"));
     WriteLine(s, fmt::format("# started {} (t = 0.000 s); summaries every {:.0f} s; per-frame rows in "
                              "nhl24_frames.csv ({}); thread CPU in nhl24_threads.csv",
                              TimeString(), s.interval_s, s.frames_csv ? "on" : "off"));
@@ -1152,6 +1266,7 @@ void Init() {
         "NHLPORT_MIP_MEMO",    "NHLPORT_GPU_INVAL_SMALL", "NHLPORT_META_ERASE",
         "NHLPORT_WRITEDATA_FAULT", "NHLPORT_VTX_KILL",   "NHLPORT_DIAG_FRAMES",
         "NHLPORT_DIAG_INTERVAL", "NHLPORT_WARM_UPLOAD_STAGING", "NHLPORT_DIAG_DRAW_PHASES",
+        "NHLPORT_DIAG_APPEND", "NHLPORT_DIAG_STACK_MB",
     };
     std::string env_line;
     for (const char* name : env_names) {
@@ -1678,7 +1793,9 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
 
     if (s.frames_csv) {
         std::string row;
-        row.reserve(400);
+        row.reserve(420);
+        row += s.session_id;
+        row += ',';
         fmt::format_to(std::back_inserter(row),
                        "{},{:.3f},{:.2f},{},{},{},{},{},{},{},{},{:.2f},{},{:.2f},{},{:.2f},{},{},{:.2f},{},"
                        "{},{},{:.2f},{:.2f},{:.2f},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"

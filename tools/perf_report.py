@@ -5,8 +5,16 @@ Complements tools/diag_report.py (spike table, glitches, markers) with sustained
 clusters, workload correlation, draw-phase breakdowns and build-to-build comparison.
 
 Usage:
-  python tools/perf_report.py LOG_DIR_OR_FRAMES_CSV [--threads CSV] [--out report.md]
-                            [--compare BASELINE_DIR_OR_CSV] [--json summary.json] [--top N]
+  python tools/perf_report.py LOG_DIR_OR_FRAMES_CSV [--session SEL] [--threads CSV] [--out report.md]
+                            [--compare BASELINE_DIR_OR_CSV [--compare-session SEL]]
+                            [--json summary.json] [--top N]
+  python tools/perf_report.py LOG_DIR --list-sessions
+  python tools/perf_report.py LOG_DIR --trend [--session SEL] [--out trend.md]
+
+The game stacks every run into the same log files (see tools/diag_sessions.py). A report covers
+the latest run unless --session selects others (latest, all, last:N, or IDs or any unique part of
+one, such as 1531). --trend prints one row per run so builds can be tracked over many
+sessions; --compare can point at the same directory with a different --compare-session.
 
 Standard library only. Per-frame thread CPU columns (cpu_ms, gpu_thr_ms, ...) are sampled with
 Windows thread-time granularity (15.625 ms) and are only meaningful when aggregated, so thread
@@ -20,6 +28,9 @@ import math
 import os
 import sys
 from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import diag_sessions  # noqa: E402
 
 SLOW_THRESHOLDS = (55.0, 45.0, 30.0)
 NATIVE30_LO, NATIVE30_HI = 31.0, 36.0
@@ -83,29 +94,27 @@ def resolve_paths(path, threads_override=None):
 COLUMNS = set()
 
 
-def load_frames(path):
+def load_frames(path, sessions=None):
+    fields = diag_sessions.fieldnames(path)
+    COLUMNS.update(fields)
+    numeric = [c for c in fields if c not in ("flags", "session")]
     rows = []
-    with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        COLUMNS.update(reader.fieldnames)
-        numeric = [c for c in reader.fieldnames if c != "flags"]
-        for raw in reader:
-            row = {c: fnum(raw.get(c)) for c in numeric}
-            row["flags"] = raw.get("flags") or ""
-            rows.append(row)
+    for raw in diag_sessions.iter_rows(path, sessions):
+        row = {c: fnum(raw.get(c)) for c in numeric}
+        row["flags"] = raw.get("flags") or ""
+        rows.append(row)
     return rows
 
 
-def load_threads(path):
+def load_threads(path, sessions=None):
     per_second = defaultdict(dict)
     if not path:
         return per_second
-    with open(path, newline="") as f:
-        for raw in csv.DictReader(f):
-            t = int(math.floor(fnum(raw.get("t_s"))))
-            name = raw.get("name") or ""
-            pct = fnum(raw.get("cpu_pct"))
-            per_second[t][name] = per_second[t].get(name, 0.0) + pct
+    for raw in diag_sessions.iter_rows(path, sessions):
+        t = int(math.floor(fnum(raw.get("t_s"))))
+        name = raw.get("name") or ""
+        pct = fnum(raw.get("cpu_pct"))
+        per_second[t][name] = per_second[t].get(name, 0.0) + pct
     return per_second
 
 
@@ -243,6 +252,12 @@ def summarize(frames, windows):
             run = 0
     s["slow_runs_ge3"] = runs
     s["longest_slow_run"] = max(longest, run)
+    # GPU command thread CPU time per draw/dispatch in busy seconds (>= 40k draws/s), measured
+    # from the one-second thread samples. The most robust cross-run metric (AGENT_HANDOFF.md §5).
+    per_draw = sorted(w["cp_pct"] * 10000.0 / (w["draws"] + w["dispatches"]) for w in windows
+                      if w.get("cp_pct") is not None and w["draws"] + w["dispatches"] >= 40000)
+    s["cp_us_per_draw"] = percentile(per_draw, 50) if per_draw else float("nan")
+    s["cp_us_per_draw_windows"] = len(per_draw)
     return s
 
 
@@ -292,6 +307,9 @@ def report(name, frames, windows, threads, top):
              f" over 50 ms {s['over_50']:,} ({s['active_over_50']:,} while rendering), over 100 ms {s['over_100']:,}")
     L.append(f"- Slow runs (>=3 consecutive frames over budget) {s['slow_runs_ge3']:,}; longest {s['longest_slow_run']} frames")
     L.append(f"- Total compile time {s['compile_ms']:.0f} ms, readback wait {s['readback_wait_ms']:.0f} ms")
+    if s["cp_us_per_draw_windows"]:
+        L.append(f"- GPU command thread {s['cp_us_per_draw']:.2f} µs per draw/dispatch (median of"
+                 f" {s['cp_us_per_draw_windows']} seconds with >= 40k draws)")
     k = s["window_kinds"]
     L.append(f"- One-second windows: ok {k.get('ok', 0)}, slow {k.get('slow', 0)},"
              f" steady-30 (likely guest 30 FPS cadence) {k.get('steady30', 0)}, pause {k.get('pause', 0)}")
@@ -504,36 +522,123 @@ def compare(base, new):
             ("over_50", "Frames > 50 ms"), ("over_100", "Frames > 100 ms"),
             ("below_55_seconds", "Seconds sustained < 55 FPS"), ("below_45_seconds", "Seconds sustained < 45 FPS"),
             ("below_30_seconds", "Seconds sustained < 30 FPS"), ("compile_ms", "Compile ms"),
-            ("readback_wait_ms", "Readback wait ms")]
+            ("readback_wait_ms", "Readback wait ms"), ("cp_us_per_draw", "CP µs per draw (busy s)")]
     for k, label in keys:
         a, b = base.get(k, 0), new.get(k, 0)
-        ch = f"{100 * (b - a) / a:+.1f}%" if a else "n/a"
+        ch = f"{100 * (b - a) / a:+.1f}%" if a and not (math.isnan(a) or math.isnan(b)) else "n/a"
         L.append(f"| {label} | {a:,.2f} | {b:,.2f} | {ch} |")
     L.append("\nSessions differ in length and scene mix; normalize by comparing equivalent scenes"
              " (F1 markers) before attributing changes to a build.\n")
     return "\n".join(L)
 
 
-def analyze(path, threads_path, top):
+def diag_log_for(frames_path):
+    log = os.path.join(os.path.dirname(frames_path) or ".", "nhl24_diag.log")
+    return log if os.path.exists(log) else None
+
+
+def pick_sessions(frames_path, spec):
+    ids = [sid for sid, _, _ in diag_sessions.scan(frames_path)]
+    if not ids:
+        raise SystemExit(f"no frames in {frames_path}")
+    return diag_sessions.select(spec, ids)
+
+
+def analyze(path, threads_path, top, session_spec="latest"):
     frames_path, threads_path = resolve_paths(path, threads_path)
-    frames = load_frames(frames_path)
-    threads = load_threads(threads_path)
+    sessions = pick_sessions(frames_path, session_spec)
+    frames = load_frames(frames_path, sessions)
+    threads = load_threads(threads_path, sessions)
+    if len(sessions) > 1:
+        # Timestamps restart every run; offset each run so one-second windows never mix runs.
+        frames, threads = concat_sessions(frames_path, threads_path, sessions)
     windows = build_windows(frames, threads)
-    return report(frames_path, frames, windows, threads, top)
+    info = diag_sessions.log_info(diag_log_for(frames_path))
+    builds = sorted({info.get(sid, {}).get("build", "?") for sid in sessions})
+    name = f"{frames_path} — session {', '.join(sessions) if len(sessions) <= 4 else f'{len(sessions)} runs'}" \
+           f" (build {', '.join(builds)})"
+    text, summary = report(name, frames, windows, threads, top)
+    summary["sessions"] = sessions
+    summary["builds"] = builds
+    return text, summary
+
+
+def concat_sessions(frames_path, threads_path, sessions):
+    frames, threads, offset = [], defaultdict(dict), 0
+    for sid in sessions:
+        f = load_frames(frames_path, [sid])
+        t = load_threads(threads_path, [sid])
+        for r in f:
+            r["t_s"] += offset
+        frames.extend(f)
+        for sec, sample in t.items():
+            threads[sec + offset] = sample
+        end = max([r["t_s"] for r in f] + [offset] + [sec + offset for sec in t])
+        offset = int(math.ceil(end)) + 10
+    return frames, threads
+
+
+def trend(path, spec, top):
+    frames_path, threads_path = resolve_paths(path, None)
+    rows = diag_sessions.scan(frames_path)
+    sessions = diag_sessions.select(spec, [sid for sid, _, _ in rows])
+    info = diag_sessions.log_info(diag_log_for(frames_path))
+    L = [f"# Performance trend: {frames_path}\n",
+         "One row per run. CP µs/draw is the GPU command thread's CPU time per draw/dispatch in"
+         " seconds with >= 40k draws (the cinematic bottleneck); lower is better. Runs with"
+         " different settings or scene mix are not directly comparable — check the config column.\n",
+         "| Session | Build | Min | Avg FPS | P99 ms | 1% low | s < 55 | s < 45 | > 50 ms | CP µs/draw | Profiling | Config |",
+         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+    out = []
+    first_cfg = None
+    for sid in sessions:
+        frames = load_frames(frames_path, [sid])
+        if len(frames) < 600:
+            continue
+        threads = load_threads(threads_path, [sid])
+        s = summarize(frames, build_windows(frames, threads))
+        d = info.get(sid, {})
+        cfg = d.get("config", "")
+        first_cfg = first_cfg or cfg
+        prof = "on" if "NHLPORT_DIAG_DRAW_PHASES=1" in d.get("env", "") else "off"
+        cpd = f"{s['cp_us_per_draw']:.2f}" if s["cp_us_per_draw_windows"] else "–"
+        L.append(f"| {diag_sessions.label(sid)} | {d.get('build', '?')} | {s['duration_s'] / 60:.1f} |"
+                 f" {s['avg_fps']:.1f} | {s['p99']:.1f} | {s['low1_fps']:.1f} |"
+                 f" {s['below_55_seconds']} | {s['below_45_seconds']} | {s['over_50']} | {cpd} | {prof} |"
+                 f" {'same' if cfg == first_cfg else 'CHANGED'} |")
+        out.append({"session": sid, "build": d.get("build"), "config": cfg, **s})
+    if not out:
+        L.append("\n(no run with at least 600 frames in the selection)")
+    if first_cfg:
+        L.append(f"\nConfig of the first listed run: `{first_cfg}`")
+    L.append("\nProfiling-on runs carry about 1 µs/draw of timer overhead; compare like with like.")
+    return "\n".join(L), out
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("session")
+    ap.add_argument("target", metavar="LOG_DIR_OR_FRAMES_CSV")
+    ap.add_argument("--session", default=None,
+                    help="latest (default for reports), all (default for --trend), last:N, or IDs")
+    ap.add_argument("--list-sessions", action="store_true", help="list the runs stacked in the logs")
+    ap.add_argument("--trend", action="store_true", help="one summary row per run")
     ap.add_argument("--threads")
     ap.add_argument("--compare")
+    ap.add_argument("--compare-session", default="latest")
     ap.add_argument("--out")
     ap.add_argument("--json")
     ap.add_argument("--top", type=int, default=15)
     a = ap.parse_args()
-    text, summary = analyze(a.session, a.threads, a.top)
-    if a.compare:
-        _, base = analyze(a.compare, None, a.top)
+    if a.list_sessions:
+        frames_path, _ = resolve_paths(a.target, None)
+        print(diag_sessions.list_text(frames_path, diag_log_for(frames_path)))
+        return
+    if a.trend:
+        text, summary = trend(a.target, a.session or "all", a.top)
+    else:
+        text, summary = analyze(a.target, a.threads, a.top, a.session or "latest")
+    if a.compare and not a.trend:
+        _, base = analyze(a.compare, None, a.top, a.compare_session)
         text += "\n" + compare(base, summary)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
