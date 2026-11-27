@@ -36,6 +36,7 @@ class PageManager;
 
 class TextureCache {
     static constexpr s64 DEFAULT_PRESSURE_GC_MEMORY = 1_GB + 512_MB;
+    static constexpr u64 NUM_FRAMES_BEFORE_REMOVAL = 32;
     static constexpr s64 DEFAULT_CRITICAL_GC_MEMORY = 3_GB;
     static constexpr s64 TARGET_GC_THRESHOLD = 8_GB;
 
@@ -423,6 +424,12 @@ private:
     void GarbageCollectImages();
     void GarbageCollectSamplers();
 
+    /// Remembers an image left alive beside a newer image at the same address.
+    void NoteStaleAlias(ImageId image_id);
+
+    /// Frees remembered aliases that went idle after a newer image took over their address.
+    void CollectStaleAliases();
+
 private:
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
@@ -438,6 +445,8 @@ private:
     TileManager tile_manager;
     absl::flat_hash_map<u64, SamplerId> samplers;
     absl::flat_hash_set<ImageId> download_images;
+    std::mutex stale_aliases_mutex;
+    absl::flat_hash_set<ImageId> stale_aliases;
     static constexpr size_t MaxArrayLayerHashes = 4096;
     std::mutex array_hash_mutex;
     std::unordered_map<u64, std::array<u64, 4>> array_layer_hashes;
