@@ -133,6 +133,12 @@ struct StreamBuffer : public Buffer {
     explicit StreamBuffer(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                           MemoryType mem_type, u64 size_bytes);
 
+    /// nhlport: incremented whenever the ring wraps; regions from an older generation may be
+    /// overwritten and must not be reused.
+    [[nodiscard]] u64 Generation() const noexcept {
+        return generation;
+    }
+
     /// Reserves a region of memory from the stream buffer. Must be followed by Commit().
     std::pair<u8*, u64> Map(u64 size, u64 alignment = 0, bool allow_wait = true);
 
@@ -165,6 +171,8 @@ private:
     /// Aligns, wraps if needed and waits for the GPU. On success mapped_size is set and the
     /// region starts at offset.
     bool PrepareMap(u64 size, u64 alignment, bool allow_wait);
+
+    u64 generation{};
 
     /// Advances offset past the mapped region and records the current tick for it.
     void AdvanceAndWatch();

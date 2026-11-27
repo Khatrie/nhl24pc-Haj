@@ -12,6 +12,7 @@
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/process.h"
 #include "core/memory.h"
+#include "video_core/buffer_cache/stream_reuse.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
 #include <array>
@@ -227,6 +228,7 @@ u64 MemoryManager::HashSparseMemory(VAddr virtual_addr, u64 size) {
 }
 
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
+    VideoCore::BreakStreamReuse();
     const VAddr virtual_addr = std::bit_cast<VAddr>(address);
     std::shared_lock lk{mutex};
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",

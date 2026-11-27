@@ -20,6 +20,8 @@ Rejected: reuse of identical stream-buffer copies. 70% of bytes were reusable, b
 
 ## Pending gameplay tests
 
+0. **Stream copy reuse (`tools\run_stream_reuse.cmd`, `NHLPORT_STREAM_REUSE=1`):** compare CP µs/draw with run `20261127-154844` (11.54), and check visuals. Stream binding is 0.39 µs fixed plus 0.071 µs/KiB per buffer, at about 6 per draw.
+
 1. **Run 1, profiling off:** confirms the command thread is back to about 11.4 µs per draw on the current build.
 2. **Run 2, profiling on:** provides the per-buffer step breakdown, which selects item 1 below.
 

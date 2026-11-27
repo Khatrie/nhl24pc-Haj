@@ -30,6 +30,7 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "common/thread.h"
+#include "video_core/buffer_cache/stream_reuse.h"
 #include "video_core/perf_counters.h"
 
 namespace Diag {
@@ -988,6 +989,25 @@ void SamplerThread() {
             prev_pf = pm.page_faults;
             last_mem = now;
             WriteStamped(s, "summary", NewWarnings(s, 10, false));
+            // nhlport: stream-buffer copy reuse (NHLPORT_STREAM_REUSE=1); silent when off.
+            static u64 prev_hits = 0, prev_hit_bytes = 0, prev_copies = 0, prev_copy_bytes = 0;
+            const u64 hits = VideoCore::g_stream_reuse_hits.load(std::memory_order_relaxed);
+            const u64 hit_bytes = VideoCore::g_stream_reuse_bytes.load(std::memory_order_relaxed);
+            const u64 copies = VideoCore::g_stream_copies.load(std::memory_order_relaxed);
+            const u64 copy_bytes = VideoCore::g_stream_copy_bytes.load(std::memory_order_relaxed);
+            if (hits + copies > prev_hits + prev_copies) {
+                const u64 dh = hits - prev_hits, dc = copies - prev_copies;
+                WriteStamped(s, "summary",
+                             fmt::format("stream reuse: {} reused ({} KiB), {} copied ({} KiB), "
+                                         "{:.1f}% of small read-only binds reused",
+                                         dh, (hit_bytes - prev_hit_bytes) >> 10, dc,
+                                         (copy_bytes - prev_copy_bytes) >> 10,
+                                         100.0 * double(dh) / double(dh + dc)));
+            }
+            prev_hits = hits;
+            prev_hit_bytes = hit_bytes;
+            prev_copies = copies;
+            prev_copy_bytes = copy_bytes;
         }
         if (s.log && tick % 2 == 0) {
             std::unique_lock lk{s.log_mutex, std::defer_lock};
@@ -1266,7 +1286,7 @@ void Init() {
         "NHLPORT_MIP_MEMO",    "NHLPORT_GPU_INVAL_SMALL", "NHLPORT_META_ERASE",
         "NHLPORT_WRITEDATA_FAULT", "NHLPORT_VTX_KILL",   "NHLPORT_DIAG_FRAMES",
         "NHLPORT_DIAG_INTERVAL", "NHLPORT_WARM_UPLOAD_STAGING", "NHLPORT_DIAG_DRAW_PHASES",
-        "NHLPORT_DIAG_APPEND", "NHLPORT_DIAG_STACK_MB",
+        "NHLPORT_DIAG_APPEND", "NHLPORT_DIAG_STACK_MB", "NHLPORT_STREAM_REUSE",
     };
     std::string env_line;
     for (const char* name : env_names) {

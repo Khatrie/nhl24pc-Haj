@@ -565,6 +565,8 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     }
 
     if (uses_dma) {
+        // Shaders with DMA access can write any guest buffer.
+        VideoCore::BreakStreamReuse();
         buffer_cache.SynchronizeDmaBuffers();
     }
 
@@ -1876,6 +1878,7 @@ bool Rasterizer::IsMapped(VAddr addr, u64 size) {
 }
 
 void Rasterizer::MapMemory(VAddr addr, u64 size) {
+    VideoCore::BreakStreamReuse();
     {
         std::scoped_lock lock{mapped_ranges_mutex};
         mapped_ranges += decltype(mapped_ranges)::interval_type::right_open(addr, addr + size);
@@ -1887,6 +1890,7 @@ void Rasterizer::RegisterMemory(VAddr addr, u64 size) {
 }
 
 void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
+    VideoCore::BreakStreamReuse();
     buffer_cache.InvalidateMemory(addr, size);
     if (std::this_thread::get_id() == GetGpuCommandProcessorThread()) {
         texture_cache.UnmapMemory(addr, size);

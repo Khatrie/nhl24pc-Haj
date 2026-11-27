@@ -148,6 +148,23 @@ The sub-phase commit (`7944dcfe`) updated shared atomic counters about 15 times 
 
 The likely cause is cache-line sharing with counters written by other threads. The counters now live in a separate cache-aligned block and are updated only while profiling. This fix still needs a gameplay check.
 
+## Buffer binding steps (run `20261127-155502`, build `fca8b5eb`, profiling on)
+
+| Step | µs/draw | µs per buffer |
+|---|---:|---:|
+| `obtain_stream` | 4.06 | 0.62 |
+| `obtain_cached` | 1.68 | 0.36 |
+| sharp | 0.31 | 0.03 |
+| GPU invalidate | 0.35 | 0.03 |
+| access check | 0.31 | 0.03 |
+
+- **Per draw:** 6.0 stream-copied and 4.2 cached buffers per draw/dispatch, about 1 GiB/s copied into the stream buffer.
+- **Cost model:** a least-squares fit over 164 one-second windows gives `obtain_stream` = 0.393 µs per buffer + 0.071 µs per KiB (R² 0.981; average buffer 3.2 KiB).
+  - The fixed part is about 63% of the stream-binding cost.
+  - The copy itself runs near memory speed (about 14 GiB/s).
+  - The fixed cost matches several cache misses per buffer: tracker bits, page table, the first source line and the ring.
+- **Profiling overhead:** 15.87 vs 11.54 µs/draw with profiling off (run `20261127-154844`). Mid-ice drops to about 47 FPS with the timers on.
+
 ## Rejected or deprioritized hypotheses
 
 - **Reusing identical stream-buffer copies within a submission (`NHLPORT_STREAM_DEDUP`, removed).**

@@ -63,15 +63,45 @@ All numbers come from real owner sessions; nothing is estimated. Details are in 
 
 ## 3. Immediate next actions
 
-1. **Owner rebuilds:** `tools\build_nhlport.ps1`, then `tools\make_release.ps1`. Check that the script prints "Keeping existing …config.json".
-2. **Verification run 1 (profiling off):** normal launcher, the usual Be a Pro sequence with F1 markers. Runs now stack in the same files, so no archiving is needed. Expected result: median command-thread cost per draw is back to about 11.4 µs. Compute it with the per-draw snippet in §5.
-3. **Verification run 2 (profiling on):** launch with `tools\run_draw_phase_profile.cmd`. Confirm `NHLPORT_DIAG_DRAW_PHASES=1` appears in the header of `nhl24_diag.log`. The report's "Buffer binding steps" table says which step owns the 5.5 µs.
-4. **Optimize the dominant buffer step:**
-   - **If it is `obtain_stream`:** cut per-buffer overhead in the stream path of `BufferCache::ObtainBuffer`: the region check, `Map`/`Commit` bookkeeping and the sparse copy setup. A plan to batch per stage is in the roadmap.
-   - **If it is `obtain_cached`:** look at `SynchronizeMemory`/`EnsureResident` work for unchanged buffers.
-   - **If it is `gpu_inval`:** skip `InvalidateMemoryFromGPU` when no image is registered in the range, or the range was already invalidated this tick.
-   - **If it is `sharp`:** cache V# reads per stage.
-5. **Then the next phases by size:** pipeline lookup (1.6 µs; per-stage specialization cache), descriptor push (1.2 µs; skip unchanged pushes) and texture lookup (1.3 µs; T#-keyed cache).
+**Verification runs done (Nov 27, build `fca8b5eb`; both stacked in `release/user/log`).**
+
+- **Run `20261127-154844`, profiling off:** 11.54 µs/draw. The counter regression is gone.
+- **Run `20261127-155502`, profiling on:** 15.87 µs/draw. Profiling adds about 4 µs/draw, enough to drop mid-ice to about 47 FPS; this is expected.
+- **Buffer steps, slow windows:**
+
+  | Step | µs/draw | µs per buffer |
+  |---|---:|---:|
+  | `obtain_stream` | 4.06 | 0.62 |
+  | `obtain_cached` | 1.68 | 0.36 |
+  | sharp, GPU invalidate, access check | about 0.3 each | |
+
+  There are about 6 stream and 4.2 cached buffers per draw.
+- **Regression over 164 one-second windows:** `obtain_stream` costs 0.39 µs fixed per buffer plus 0.071 µs per KiB (R² 0.98, about 3.2 KiB per buffer). The fixed part dominates.
+  - Most likely cause: cache misses on the per-buffer metadata (tracker, page table, source line, ring), not the copy itself.
+  - This is why the earlier hash-based reuse saved nothing: it still read the guest memory.
+
+1. **New experiment, `NHLPORT_STREAM_REUSE=1`** (commit below; off by default):
+   - **Behaviour:** a small read-only buffer bound again with the same address and size, in the same submission tick and ring generation, reuses the earlier stream copy. It skips the GPU-modified check, the copy and `Map`/`Commit`.
+   - **Safety:** no hashing. A global epoch (`video_core/buffer_cache/stream_reuse.h`) ends the reuse window on:
+     - `TryWriteBacking` (CP `WRITE_DATA`, readbacks, image downloads),
+     - `BufferCache::ReadMemory`,
+     - writable binds,
+     - DMA shaders,
+     - map/unmap,
+     - every graphics packet except register sets, draws and debug or sharp NOPs,
+     - every CE and compute packet,
+     - every CP coroutine resume,
+     - each new submission.
+   - **Hit rate:** appears as `stream reuse:` lines in the diag-log summaries.
+2. **Owner test:**
+   - Rebuild.
+   - Play the usual sequence through `tools\run_stream_reuse.cmd` (profiling off).
+   - Watch for any graphical difference: flicker, wrong colours, stale animation or bones, UI.
+   - Then run `python tools/perf_report.py release/user/log --trend`.
+   - Compare CP µs/draw against `20261127-154844` (11.54).
+   - **Keep it** if µs/draw drops measurably and nothing looks wrong. Then make it the default (`NHLPORT_STREAM_REUSE=0` would disable it).
+   - **If visuals break**, find which reset point is missing before going further.
+3. **Then the next phases by size:** pipeline lookup (1.7 µs; per-stage specialization cache), descriptor push (1.2 µs; skip unchanged pushes), texture lookup and views (2.1 µs; T#-keyed cache), and `obtain_cached` (1.7 µs).
 
 ## 4. Testing protocol
 

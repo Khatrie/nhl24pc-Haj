@@ -16,6 +16,7 @@
 #include "core/platform.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_cmds.h"
+#include "video_core/buffer_cache/stream_reuse.h"
 #include "video_core/perf_counters.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -70,6 +71,54 @@ void LogWaitRegMemSpin(const char* queue, const AmdGpu::PM4CmdWaitRegMem& w, boo
 
 namespace AmdGpu {
 
+/// nhlport: graphics packets after which earlier stream-buffer copies stay valid. They only set
+/// registers, draw, or carry debug markers, and none of them writes guest memory or signals the
+/// guest CPU. Every other packet ends the reuse window (VideoCore::BreakStreamReuse).
+static bool KeepsStreamReuse(PM4ItOpcode opcode, const PM4Header* header) {
+    switch (opcode) {
+    case PM4ItOpcode::SetContextReg:
+    case PM4ItOpcode::SetShReg:
+    case PM4ItOpcode::SetUconfigReg:
+    case PM4ItOpcode::SetConfigReg:
+    case PM4ItOpcode::IndexType:
+    case PM4ItOpcode::IndexBase:
+    case PM4ItOpcode::IndexBufferSize:
+    case PM4ItOpcode::NumInstances:
+    case PM4ItOpcode::SetBase:
+    case PM4ItOpcode::ContextControl:
+    case PM4ItOpcode::SetPredication:
+    case PM4ItOpcode::DrawIndex2:
+    case PM4ItOpcode::DrawIndexOffset2:
+    case PM4ItOpcode::DrawIndexAuto:
+    case PM4ItOpcode::DrawIndirect:
+    case PM4ItOpcode::DrawIndirectMulti:
+    case PM4ItOpcode::DrawIndexIndirect:
+    case PM4ItOpcode::DrawIndexIndirectMulti:
+    case PM4ItOpcode::DrawIndexIndirectCountMulti:
+        return true;
+    case PM4ItOpcode::Nop: {
+        const auto* nop = reinterpret_cast<const PM4CmdNop*>(header);
+        if (nop->header.count.Value() == 0) {
+            return true;
+        }
+        switch (nop->data_block[0]) {
+        case PM4CmdNop::PayloadType::DebugMarkerPush:
+        case PM4CmdNop::PayloadType::DebugMarkerPop:
+        case PM4CmdNop::PayloadType::DebugSetMarker:
+        case PM4CmdNop::PayloadType::DebugColorMarkerPush:
+        case PM4CmdNop::PayloadType::SetVsharpInUdata:
+        case PM4CmdNop::PayloadType::SetTsharpInUdata:
+        case PM4CmdNop::PayloadType::SetSsharpInUdata:
+            return true;
+        default:
+            return false;
+        }
+    }
+    default:
+        return false;
+    }
+}
+
 static const char* dcb_task_name{"DCB_TASK"};
 static const char* ccb_task_name{"CCB_TASK"};
 
@@ -81,10 +130,13 @@ static_assert(Liverpool::NumComputeRings <= MAX_NAMES);
 
 static const char* acb_task_name[] = NAME_ARRAY(ACB_TASK, MAX_NAMES);
 
+// nhlport: whatever ran while this queue was suspended (other queues, the guest CPU behind a
+// wait) may have changed guest memory, so stream-buffer copies made before it are not reused.
 #define YIELD(name)                                                                                \
     FIBER_EXIT;                                                                                    \
     co_yield {};                                                                                   \
-    FIBER_ENTER(name);
+    FIBER_ENTER(name);                                                                             \
+    VideoCore::BreakStreamReuse();
 
 #define YIELD_CE() YIELD(ccb_task_name)
 #define YIELD_GFX() YIELD(dcb_task_name)
@@ -261,6 +313,7 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
 
         const PM4ItOpcode opcode = header->type3.opcode;
             VideoCore::Perf::current_pm4 = static_cast<u32>(opcode);
+        VideoCore::BreakStreamReuse();
         const auto* it_body = reinterpret_cast<const u32*>(header) + 1;
         switch (opcode) {
         case PM4ItOpcode::Nop: {
@@ -315,6 +368,7 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
 }
 
 Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb) {
+    VideoCore::BreakStreamReuse();
     FIBER_ENTER(dcb_task_name);
 
     cblock.Reset();
@@ -352,6 +406,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             const u32 count = header->type3.NumWords();
             const PM4ItOpcode opcode = header->type3.opcode;
             VideoCore::Perf::current_pm4 = static_cast<u32>(opcode);
+            if (!KeepsStreamReuse(opcode, header)) {
+                VideoCore::BreakStreamReuse();
+            }
             switch (opcode) {
             case PM4ItOpcode::Nop: {
                 const auto* nop = reinterpret_cast<const PM4CmdNop*>(header);
@@ -1060,6 +1117,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
 
         const PM4ItOpcode opcode = header->type3.opcode;
             VideoCore::Perf::current_pm4 = static_cast<u32>(opcode);
+        VideoCore::BreakStreamReuse();
 
         const auto* it_body = reinterpret_cast<const u32*>(header) + 1;
         switch (opcode) {
