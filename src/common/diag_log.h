@@ -16,7 +16,9 @@
 // A user marker ("I saw a glitch now") comes from the hotkey (hotkey_diag_mark, F1 by default)
 // or from writing a note into <user>/captures/diagmark.
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -26,6 +28,21 @@
 #include "common/types.h"
 
 namespace Diag {
+
+enum class DrawPhase : u32 {
+    Filter,
+    Pipeline,
+    Targets,
+    Resources,
+    RenderState,
+    VertexIndex,
+    Barriers,
+    Descriptors,
+    DynamicState,
+    Record,
+    Dispatch,
+    Count,
+};
 
 /// Cheap global counters incremented by the emulator subsystems; the present thread turns them
 /// into per-frame deltas. All are cumulative since process start.
@@ -89,7 +106,52 @@ inline std::atomic<u64> cs_meta_clear{0};  ///< dispatches replaced by a metadat
 inline std::atomic<u64> cs_image_copy{0};  ///< dispatches replaced by an image copy
 inline std::atomic<u64> cs_image_clear{0}; ///< dispatches replaced by an image clear
 inline std::atomic<u64> cs_hle{0};         ///< dispatches executed by a HLE shader implementation
+inline std::atomic<u64> vk_rendering_begins{0}; ///< dynamic rendering scopes actually begun
+/// CPU time of the GPU command thread per draw/dispatch phase; NHLPORT_DIAG_DRAW_PHASES=1.
+inline std::atomic<bool> draw_phases_enabled{false};
+inline std::array<std::atomic<u64>, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns{};
+inline std::atomic<u64> draw_phase_total_ns{0};
 } // namespace C
+
+/// Sequential phase timer for one draw or dispatch: Mark() charges the time since the previous
+/// mark to a phase; the destructor charges the whole call to the total.
+class DrawPhaseTimer {
+    using Clock = std::chrono::steady_clock;
+
+public:
+    DrawPhaseTimer() : enabled{C::draw_phases_enabled.load(std::memory_order_relaxed)} {
+        if (enabled) {
+            start = last = Clock::now();
+        }
+    }
+    ~DrawPhaseTimer() {
+        if (enabled) {
+            C::draw_phase_total_ns.fetch_add(Nanoseconds(start, Clock::now()),
+                                             std::memory_order_relaxed);
+        }
+    }
+    DrawPhaseTimer(const DrawPhaseTimer&) = delete;
+    DrawPhaseTimer& operator=(const DrawPhaseTimer&) = delete;
+
+    void Mark(DrawPhase phase) {
+        if (!enabled) {
+            return;
+        }
+        const auto now = Clock::now();
+        C::draw_phase_ns[static_cast<size_t>(phase)].fetch_add(Nanoseconds(last, now),
+                                                               std::memory_order_relaxed);
+        last = now;
+    }
+
+private:
+    static u64 Nanoseconds(Clock::time_point from, Clock::time_point to) {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count();
+    }
+
+    bool enabled;
+    Clock::time_point start{};
+    Clock::time_point last{};
+};
 
 /// Whether the diagnostic log is active (cheap check for callers that build strings).
 bool Enabled();

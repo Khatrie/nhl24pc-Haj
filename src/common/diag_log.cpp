@@ -121,6 +121,8 @@ struct Counters {
     ImageBufferSample expand_source, refresh_source;
     u64 image_construct_ns, expand_construct_ns;
     u64 vma_image_create_ns, staging_new_bytes, staging_reused_bytes;
+    u64 vk_rendering_begins, draw_phase_total_ns;
+    std::array<u64, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns;
 };
 
 /// A compute dispatch kind replaced by an emulator fast path (one entry per kind + shader).
@@ -141,6 +143,10 @@ Counters Snapshot() {
     u64 freed = 0;
     for (const auto& f : P::tc_free) {
         freed += ld(f);
+    }
+    std::array<u64, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns{};
+    for (size_t i = 0; i < draw_phase_ns.size(); ++i) {
+        draw_phase_ns[i] = ld(C::draw_phase_ns[i]);
     }
     return Counters{
         .gpu_frame = ld(P::gpu_frame),
@@ -207,6 +213,9 @@ Counters Snapshot() {
         .vma_image_create_ns = ld(C::vma_image_create_ns),
         .staging_new_bytes = ld(C::staging_new_bytes),
         .staging_reused_bytes = ld(C::staging_reused_bytes),
+        .vk_rendering_begins = ld(C::vk_rendering_begins),
+        .draw_phase_total_ns = ld(C::draw_phase_total_ns),
+        .draw_phase_ns = draw_phase_ns,
     };
 }
 
@@ -373,7 +382,10 @@ constexpr const char* FramesHeader =
     "expand_sync_cpu_ms,refresh_staging_cpu_ms,refresh_guest_copy_cpu_ms,refresh_flush_cpu_ms,"
     "refresh_sync_cpu_ms,image_construct_cpu_ms,expand_construct_cpu_ms,"
     "vma_image_create_cpu_ms,upload_staging_new_bytes,upload_staging_reused_bytes,"
-    "upload_staging_retained_bytes";
+    "upload_staging_retained_bytes,vk_rendering_begins,draw_total_cpu_ms,draw_filter_cpu_ms,"
+    "draw_pipeline_cpu_ms,draw_targets_cpu_ms,draw_resources_cpu_ms,draw_render_state_cpu_ms,"
+    "draw_vertex_index_cpu_ms,draw_barriers_cpu_ms,draw_descriptors_cpu_ms,"
+    "draw_dynamic_state_cpu_ms,draw_record_cpu_ms,dispatch_cpu_ms";
 
 #ifdef _WIN32
 u64 FileTimeTo100ns(const FILETIME& ft) {
@@ -1072,6 +1084,8 @@ void Init() {
         return;
     }
     s.frames_csv = env_on("NHLPORT_DIAG_FRAMES", true);
+    C::draw_phases_enabled.store(env_on("NHLPORT_DIAG_DRAW_PHASES", false),
+                                 std::memory_order_relaxed);
     if (const char* v = std::getenv("NHLPORT_DIAG_INTERVAL"); v && *v) {
         s.interval_s = std::clamp(std::atof(v), 1.0, 600.0);
     }
@@ -1114,7 +1128,7 @@ void Init() {
         "NHLPORT_GPU_CLOCK",   "NHLPORT_READBACK_DRAIN", "NHLPORT_STREAMED",
         "NHLPORT_MIP_MEMO",    "NHLPORT_GPU_INVAL_SMALL", "NHLPORT_META_ERASE",
         "NHLPORT_WRITEDATA_FAULT", "NHLPORT_VTX_KILL",   "NHLPORT_DIAG_FRAMES",
-        "NHLPORT_DIAG_INTERVAL", "NHLPORT_WARM_UPLOAD_STAGING",
+        "NHLPORT_DIAG_INTERVAL", "NHLPORT_WARM_UPLOAD_STAGING", "NHLPORT_DIAG_DRAW_PHASES",
     };
     std::string env_line;
     for (const char* name : env_names) {
@@ -1685,12 +1699,19 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
         };
         append_source(&Counters::expand_source);
         append_source(&Counters::refresh_source);
-        fmt::format_to(std::back_inserter(row), ",{:.3f},{:.3f},{:.3f},{},{},{}\n",
+        fmt::format_to(std::back_inserter(row), ",{:.3f},{:.3f},{:.3f},{},{},{},{},{:.3f}",
                        double(d(&Counters::image_construct_ns)) / 1e6,
                        double(d(&Counters::expand_construct_ns)) / 1e6,
                        double(d(&Counters::vma_image_create_ns)) / 1e6,
                        d(&Counters::staging_new_bytes), d(&Counters::staging_reused_bytes),
-                       C::staging_retained_bytes.load(std::memory_order_relaxed));
+                       C::staging_retained_bytes.load(std::memory_order_relaxed),
+                       d(&Counters::vk_rendering_begins),
+                       double(d(&Counters::draw_phase_total_ns)) / 1e6);
+        for (size_t i = 0; i < cur.draw_phase_ns.size(); ++i) {
+            fmt::format_to(std::back_inserter(row), ",{:.3f}",
+                           double(cur.draw_phase_ns[i] - p.draw_phase_ns[i]) / 1e6);
+        }
+        row += '\n';
         std::scoped_lock lk{s.frame_mutex};
         s.frames_buf += row;
     }

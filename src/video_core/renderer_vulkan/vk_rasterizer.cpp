@@ -216,39 +216,51 @@ vk::ClearValue Rasterizer::ColorClearValue(const AmdGpu::ColorBuffer& col_buf) c
 
 void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     RENDERER_TRACE;
+    Diag::DrawPhaseTimer phases;
 
     scheduler.PopPendingOperations();
 
     VideoCore::Perf::draws.fetch_add(1, std::memory_order_relaxed);
     if (!FilterDraw()) {
+        phases.Mark(Diag::DrawPhase::Filter);
         return;
     }
+    phases.Mark(Diag::DrawPhase::Filter);
 
     const auto& regs = liverpool->regs;
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline();
+    phases.Mark(Diag::DrawPhase::Pipeline);
     if (!pipeline) {
         VideoCore::Perf::draw_skip_pipeline.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
     PrepareRenderState(pipeline);
-    if (!BindResources(pipeline)) {
+    phases.Mark(Diag::DrawPhase::Targets);
+    const bool resources_bound = BindResources(pipeline);
+    phases.Mark(Diag::DrawPhase::Resources);
+    if (!resources_bound) {
         VideoCore::Perf::draw_skip_bind.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     const auto state = BeginRendering(pipeline);
+    phases.Mark(Diag::DrawPhase::RenderState);
 
     BindVertexBuffers(pipeline);
     if (is_indexed) {
         BindIndexBuffer(index_offset);
     }
+    phases.Mark(Diag::DrawPhase::VertexIndex);
 
     if (needs_barrier) {
         runtime.FlushBarriers();
     }
+    phases.Mark(Diag::DrawPhase::Barriers);
 
     pipeline->BindResources(set_writes, push_data);
+    phases.Mark(Diag::DrawPhase::Descriptors);
     UpdateDynamicState(pipeline, is_indexed);
+    phases.Mark(Diag::DrawPhase::DynamicState);
     scheduler.BeginRendering(state);
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
@@ -272,36 +284,45 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
                      &pipeline->GetStage(Shader::SwStage::Fragment));
     }
     ResetBindings(false);
+    phases.Mark(Diag::DrawPhase::Record);
 }
 
 void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 stride,
                               u32 max_count, VAddr count_address, u16 vertex_sgpr_offset,
                               u16 instance_sgpr_offset) {
     RENDERER_TRACE;
+    Diag::DrawPhaseTimer phases;
 
     scheduler.PopPendingOperations();
 
     VideoCore::Perf::draws.fetch_add(1, std::memory_order_relaxed);
     if (!FilterDraw()) {
+        phases.Mark(Diag::DrawPhase::Filter);
         return;
     }
+    phases.Mark(Diag::DrawPhase::Filter);
 
     const DrawIndirectParams params = {
         .vertex_sgpr_offset = vertex_sgpr_offset,
         .instance_sgpr_offset = instance_sgpr_offset,
     };
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params);
+    phases.Mark(Diag::DrawPhase::Pipeline);
     if (!pipeline) {
         VideoCore::Perf::draw_skip_pipeline.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
     PrepareRenderState(pipeline);
-    if (!BindResources(pipeline)) {
+    phases.Mark(Diag::DrawPhase::Targets);
+    const bool resources_bound = BindResources(pipeline);
+    phases.Mark(Diag::DrawPhase::Resources);
+    if (!resources_bound) {
         VideoCore::Perf::draw_skip_bind.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     const auto state = BeginRendering(pipeline);
+    phases.Mark(Diag::DrawPhase::RenderState);
 
     BindVertexBuffers(pipeline);
     if (is_indexed) {
@@ -321,13 +342,17 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         bound_buffers.emplace_back(count_buffer, count_offset, 4,
                                    vk::AccessFlagBits2::eIndirectCommandRead);
     }
+    phases.Mark(Diag::DrawPhase::VertexIndex);
 
     if (needs_barrier) {
         runtime.FlushBarriers();
     }
+    phases.Mark(Diag::DrawPhase::Barriers);
 
     pipeline->BindResources(set_writes, push_data);
+    phases.Mark(Diag::DrawPhase::Descriptors);
     UpdateDynamicState(pipeline, is_indexed);
+    phases.Mark(Diag::DrawPhase::DynamicState);
     scheduler.BeginRendering(state);
 
     const auto cmdbuf = scheduler.CommandBuffer();
@@ -359,11 +384,19 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         LogDrawTrace("drawind", pipeline, &pipeline->GetStage(Shader::SwStage::Fragment));
     }
     ResetBindings(false);
+    phases.Mark(Diag::DrawPhase::Record);
 }
 
 void Rasterizer::DispatchDirect() {
     VideoCore::Perf::dispatches.fetch_add(1, std::memory_order_relaxed);
     RENDERER_TRACE;
+    Diag::DrawPhaseTimer phases;
+    struct MarkOnExit {
+        Diag::DrawPhaseTimer& timer;
+        ~MarkOnExit() {
+            timer.Mark(Diag::DrawPhase::Dispatch);
+        }
+    } mark_dispatch{phases};
 
     scheduler.PopPendingOperations();
 
@@ -409,6 +442,13 @@ void Rasterizer::DispatchDirect() {
 void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     VideoCore::Perf::dispatches.fetch_add(1, std::memory_order_relaxed);
     RENDERER_TRACE;
+    Diag::DrawPhaseTimer phases;
+    struct MarkOnExit {
+        Diag::DrawPhaseTimer& timer;
+        ~MarkOnExit() {
+            timer.Mark(Diag::DrawPhase::Dispatch);
+        }
+    } mark_dispatch{phases};
 
     scheduler.PopPendingOperations();
 
