@@ -165,6 +165,47 @@ The likely cause is cache-line sharing with counters written by other threads. T
   - The fixed cost matches several cache misses per buffer: tracker bits, page table, the first source line and the ring.
 - **Profiling overhead:** 15.87 vs 11.54 µs/draw with profiling off (run `20261127-154844`). Mid-ice drops to about 47 FPS with the timers on.
 
+## Run-to-run noise (profiling off, same draw path)
+
+Two baseline runs differ by 0.14 µs/draw: `20261127-154844` measured 11.54 and `20261127-171410` measured 11.40. Average FPS (57.6 against 54.7) and sustained-slow seconds (30 against 66) vary much more, because they depend on how many cinematics a run contains.
+
+Compare builds by CP µs/draw. Treat differences under about 0.3 µs as noise until more repeats exist.
+
+## Command-thread sampling profile (run `20261127-172849`, `NHLPORT_CP_SAMPLE=1`)
+
+**Setup:** 500 Hz, 98,668 samples, 0 failed. The command thread was suspended 1.66% of the time, and the run measured 12.22 µs/draw, so the sampler costs about 0.8 µs/draw.
+
+The table covers slow seconds (below 55 FPS, not a steady 30), 23,615 samples. Time in external modules is attributed to the nearest nhl24.exe frame.
+
+| Cost | Share | Detail |
+|---|---:|---|
+| `Rasterizer::Draw` (inclusive) | 69% | of which `BindResources` 35%, `GetGraphicsPipeline` 9%, `BeginRendering` 4.5%, `ResetBindings` 4.3% |
+| NVIDIA driver (`nvoglv64.dll`, self) | 16% | From `Pipeline::BindResources` (push descriptors) 5.4%, `Draw` (bind, draw, dynamic state) 4.6%, `BeginRendering` 1.1%, `DescriptorHeap::Commit` 0.8%, `FlushBarriers` 0.8% |
+| `memcpy` (`VCRUNTIME140`) | 12.4% | `CopySparseMemory` from the `ObtainBuffer` stream path 6.5%, `ObtainBufferForImage` 2.3%, `SynchronizeMemory` 0.9% |
+| `ntdll` (self) | 20.9% | Readback `Semaphore::Wait` in `ReadMemory` 5.8%; idle wait for commands (`_Cnd_timedwait` in `Process`) 3.6%; `VirtualProtect` through `SignalImpl::Protect` 2.9% |
+| `SynchronizeMemory` (inclusive) | 7.1% | Page-watch updates 3.5%, protection changes 3.0% |
+| `GetProgram` (inclusive) | 7.1% | `StageSpecialization` constructor 2.8% and destructor 1.7% |
+| `FindImage` (inclusive) | 6.5% | Plus `Image::FindView` 1.8% |
+| `AccessBuffer` / `IntervalList::Add` | 3.8% / 3.5% | Barrier bookkeeping |
+| `ImageInfo` constructor | 2.5% | Includes `UpdateSize` |
+| VMA dedicated allocate and free | about 1.4% | Image creation and deletion |
+
+**Conclusions:**
+- Per-draw work is spread over many moderate costs. No single exact fix is worth more than about 3%.
+- About a quarter of the thread's time is inside the driver recording commands. That work can move to another thread, which is the basis of the threading proposal in the roadmap.
+
+## Exact optimizations A and B (`d2ca6b51`)
+
+| Run | Switches | CP µs/draw |
+|---|---|---:|
+| `20261127-174246` | A: `NHLPORT_OPT_STREAM_UNTRACKED=1` (stream-buffer reads not barrier-tracked) | 11.65 |
+| `20261127-174648` | A + B: `NHLPORT_OPT_TEX_INFO_MEMO=1` (ImageInfo cached by T#) | 11.24 |
+
+- **A alone:** no gain.
+- **A+B:** about 2% below the mean of the two baselines, which is at the noise limit.
+- The profile overstated the removable part: much of the barrier bookkeeping is for non-stream buffers.
+- Both changes are exact, so making them default on is harmless.
+
 ## Rejected or deprioritized hypotheses
 
 - **Reusing stream-buffer copies inside a submission, without hashing (`NHLPORT_STREAM_REUSE`, `30fd8026`, reverted).**

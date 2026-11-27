@@ -1,67 +1,122 @@
 # NHL24 PC performance roadmap
 
-Integration branch: `performance/cinematic-renderer-overhaul`, from `d2d799b7`. Evidence is in `PERFORMANCE_FINDINGS.md`; the operational state and test protocol are in `AGENT_HANDOFF.md`.
+Integration branch: `performance/cinematic-renderer-overhaul`, from `d2d799b7`. Evidence is in `PERFORMANCE_FINDINGS.md`; operations and the test protocol are in `AGENT_HANDOFF.md`.
+
+**Goal:** cinematics at a steady 55–60 FPS without changing rendering.
+
+**Bottleneck:** the GPU command processor thread, at about 11.4 µs of CPU per draw. Cinematics send about 3,200 draws per frame, so 60 FPS needs about 4.6 µs per draw: roughly 60% less.
 
 ## Done
 
 | Change | Default / toggle | Result |
 |---|---|---|
-| Session analysis tool `tools/perf_report.py` | n/a | In use for every run |
-| Stacked diagnostic logs across runs, `--trend` / `--session` / `--list-sessions` | On; `NHLPORT_DIAG_APPEND=0` disables, `NHLPORT_DIAG_STACK_MB` caps file size (default 1024) | Tested offline; first in-game run pending |
-| Per-draw phase timers, binding sub-phases, per-buffer steps | `NHLPORT_DIAG_DRAW_PHASES=1` (launch with `tools\run_draw_phase_profile.cmd`) | Attributed about 11.4 µs/draw on the command thread |
-| `vk_rendering_begins` counter | Always on | Render-pass churn ruled out (0.09 begins per draw) |
-| Array-blank crest check content cache | On | Crest still hidden; no FPS change (it was not the bottleneck) |
-| Pipeline cache IO thread drain and atomic counter | On | Correctness fix |
-| Driver `.vkcache` autosave after runtime compiles | On; `NHLPORT_DRIVER_CACHE_AUTOSAVE=0` disables | Works, about 46 ms on a worker |
-| `make_release.ps1` keeps user settings | `-ResetUserConfig` writes the template | Not yet exercised |
-| Profiling counters isolated and gated (`c6e0fe98`) | n/a | Removes a regression of about 2 µs/draw; needs verification run 1 |
+| Session analysis `tools/perf_report.py` | n/a | Used for every run |
+| Stacked diagnostic logs, `--trend` / `--session` / `--list-sessions` | On; `NHLPORT_DIAG_APPEND=0`, `NHLPORT_DIAG_STACK_MB` | Verified in game |
+| Per-draw phase timers | `NHLPORT_DIAG_DRAW_PHASES=1` (`tools\run_draw_phase_profile.cmd`) | Works, but adds about 4 µs/draw |
+| **Sampling profiler of the command thread** + linker map | `NHLPORT_CP_SAMPLE=1` (`tools\run_cp_profile.cmd`), `tools/cp_profile.py` | 1.7% suspension, about 0.8 µs/draw; see findings |
+| `vk_rendering_begins` counter | On | Render-pass churn ruled out |
+| Crest array-blank content cache | On | Correct; no FPS change |
+| Pipeline cache IO drain, driver `.vkcache` autosave | On; `NHLPORT_DRIVER_CACHE_AUTOSAVE=0` | Works |
+| `make_release.ps1` keeps user settings; `tools\build_and_stage.cmd` builds the exe and launcher and stages them | n/a | Used for every build |
+| Ports from HajDEO/nhl24pc: red-zone crash fix (always on), save-data fix, pipeline cache rebuild, C++ exception filter, stale-alias VRAM release | On | Clean runs |
+| A: stream-buffer reads not barrier-tracked (exact) | `NHLPORT_OPT_STREAM_UNTRACKED=1` | 11.65 µs/draw: no gain |
+| B: ImageInfo cache keyed on the T# (exact) | `NHLPORT_OPT_TEX_INFO_MEMO=1` | With A: 11.24 µs/draw, about 2%, at the noise limit |
 
-Rejected: in-submission stream-copy reuse without hashing (`30fd8026`): 10% hit rate, 14.19 vs 11.54 µs/draw, and unsound against direct guest CPU writes; reverted. Also rejected: reuse of identical stream-buffer copies. 70% of bytes were reusable, but there was no reduction in binding cost; reverted.
+**Rejected:**
+- **Stream-copy reuse within a submission** (`30fd8026`, reverted): 10% hit rate, 14.19 µs/draw, and unsound against direct guest CPU writes.
+- **Hashed reuse of identical stream copies:** no gain.
 
-## Pending gameplay tests
+## Pending decisions
 
+1. **Make A+B default on.** Both are exact, and their best run was 2% faster. This can go into the next build.
+2. **Start the multi-threaded command processing below.** Waiting for the owner's go-ahead.
 
-1. **Run 1, profiling off:** confirms the command thread is back to about 11.4 µs per draw on the current build.
-2. **Run 2, profiling on:** provides the per-buffer step breakdown, which selects item 1 below.
+## Proposed: multi-threaded command processing
 
-## Next work, in evidence order (slow-window µs per draw)
+### Why
 
-1. **Buffer binding (5.5 µs, about 12 buffers per draw).** Target the step that run 2 identifies:
-   - **Stream path:** small read-only buffers are re-copied every draw. Reduce fixed per-buffer overhead in `BufferCache::ObtainBuffer`:
-     - one region check per contiguous range,
-     - a single stream `Map` per stage for all small buffers,
-     - avoid repeated alignment and watch bookkeeping.
-   - **Cached path:** skip `SynchronizeMemory` work for ranges with no CPU-modified pages. Check this cheaply first.
-   - **GPU invalidate:** skip `InvalidateMemoryFromGPU` for ranges with no registered images, or ranges already invalidated in the same tick.
-   - **Sharp reads:** cache V# reads per stage when the flattened user data is unchanged.
-2. **Pipeline lookup (1.6 µs).**
-   - Per-stage specialization cache keyed on program address, binary hash, flattened user data contents, runtime info and start bindings.
-   - Plus a last-key fast path.
-   - Invalidate on new permutations, shader replacement and code changes.
-3. **Texture lookup and views (2.1 µs).**
-   - T#/S#-keyed binding cache, validated by a texture-cache generation counter and image flags (`needs_rebind`, dirty bits).
-4. **Descriptor push (1.2 µs).** Skip pushes whose layout and payload match the previous draw in the same command buffer.
-5. **Cleanup and recording (1.5 µs).**
-   - `ResetBindings` access tracking.
-   - Avoid per-draw mutex and `DebugState` shared-lock checks in `liverpool.cpp`.
-6. **Readbacks (26–36 ms/s of GPU wait).**
-   - Post-read invalidation for `ReadFile`.
-   - Discard downloads for fully overwritten pages.
-   - Earlier flush for windows with repeated readbacks.
-7. **Texture expansion and image creation (spikes of 100–480 ms).**
-   - Delta expansion: GPU-copy the old mips and upload only the new ones.
-   - Skip the refresh on render-target resize.
-   - Bounded image recycle pool.
-8. **Pipeline cache identity.** Content-hash permutation identity, plus serializing the discard fragment shader. Needs one cache version bump.
-9. **Parallel draw preparation and async pipelines.** Only after 1–5 are measured.
+The profile (session `20261127-172849`, slow seconds) shows that small exact fixes each save 1–3%. The command thread's time splits into four kinds of work:
+- preparing draws in our own code: about 45–55%,
+- inside the NVIDIA driver recording commands: about 25%, mostly push descriptors and draw recording,
+- copying guest memory: about 10%,
+- waiting for readbacks: about 7%.
 
-Deprioritized: filesystem AIO (correlation with FPS is −0.05) and render-pass/barrier churn (ruled out).
+Draws must stay in guest order and share mutable state (registers, texture cache, buffer cache, barriers), so the work cannot be split *across draws*. It can be split into **pipeline stages**, where each thread does one stage for every draw in order. Throughput is then limited by the slowest stage.
 
-## Gameplay test protocol
+### Stages (each behind a switch, measured with the owner before the next)
 
-See `AGENT_HANDOFF.md` §4. Use the same settings every run (FIFO, 1080p windowed, RCAS on). Launch through the profiling script when phase data is needed. Runs stack in the same log files; track them with `perf_report.py --trend` and compare µs per draw rather than raw totals.
+**T0. Readback waits off the critical path (small).**
+- Today `BufferCache::ReadMemory` runs its readback on the command thread through `SendCommand` and blocks in `Semaphore::Wait`: 5.8% of slow time.
+- Move the wait and the copy-back to a helper thread.
+- The command thread continues with packets that do not depend on the data.
+- The faulting guest thread still waits for its data, which is the correct behaviour.
+- This also proves the threading and synchronization scaffolding.
+- **Expected:** up to about 5–7%.
+
+**T1. Split *prepare* from *record* (the main gain).**
+- **The command thread keeps:**
+  - PM4 decoding,
+  - register state,
+  - pipeline lookup,
+  - texture and buffer cache lookups and uploads,
+  - the decision of what to bind.
+- **The command thread emits:** a compact, ordered command stream with everything the driver call needs: pipeline handle, push-descriptor payload copied by value, dynamic state, vertex and index bindings, draw parameters, barriers.
+- **A recorder thread** owns the Vulkan command buffer and replays the stream into it.
+- **Correctness requirements:**
+  - Every Vulkan command, including texture-cache copies, uploads, clears and barriers, goes through the stream in guest order.
+  - Objects referenced by queued commands stay alive until recorded, through the scheduler's deferred destruction.
+  - `Scheduler::Flush`, `Finish` and `Wait`, called from the command thread, first drain the stream.
+  - Submission stays ordered.
+  - The stream is a bounded ring, with back-pressure and no busy-waiting.
+- **Expected:** throughput bounded by the prepare stage, about 55–60% of today: roughly 6.5–7 µs per draw.
+
+**T2. Memory-copy helper.**
+- Large guest-to-staging copies (texture refresh and expansion, large buffer uploads) run on a worker.
+- Small stream copies stay inline: worker scheduling would cost more than the copy.
+- Mapping lifetime and coherency rules are as in the project instructions (Phase 5).
+- **Expected:** a few percent on top, plus fewer hitches during texture streaming.
+
+**Not planned:** more than 3 threads. The prepare stage would stay the bottleneck, and splitting it needs the texture and buffer caches redesigned for concurrent access.
+
+Parallel recording of the stream into several secondary command buffers is possible later, if the profile shows recording becoming the bottleneck.
+
+**Expected result of T0–T2:** about 6.5 µs per draw. Most cinematics would land in the mid-50s to 60 FPS; the heaviest scenes would still dip.
+
+**Risks:**
+- Ordering and lifetime bugs: corruption, flicker or crashes.
+- Deadlocks around `Finish` and `Wait`.
+- Readback ordering against later packets.
+
+Every stage keeps its switch until it has run cleanly across several sessions.
+
+## Smaller exact fixes (backlog, from the profile)
+
+| Item | Slow-second share | Idea | Risk |
+|---|---:|---|---|
+| `SynchronizeMemory` page re-protection | 7.1% incl. (`VirtualProtect` 3%) | Batch protection changes per draw or per region | Must not miss CPU writes between upload and protect |
+| Pipeline lookup | 7.1% incl. (`StageSpecialization` ctor+dtor 4.5%) | Reuse one specialization object instead of building and destroying one per stage per draw; per-stage last-key fast path | Low if the comparison stays exact |
+| Push descriptors in the driver | about 5.4% | Skip identical pushes; longer term, descriptor buffers | Low (skip) to high (redesign) |
+| Texture lookup and views | `FindImage` 6.5%, `FindView` 1.8% | T#-keyed binding cache validated by a texture-cache generation counter | Medium (invalidation) |
+| Stream `memcpy` | 6.5% | Little to gain: it is near memory bandwidth | — |
+
+## Other open items
+
+- **Shared-memory barrier fix for split GCN waves** (from HajDEO `6b08321a`): a correctness fix for NVIDIA compute shaders. It needs a shader cache version bump and a one-time recompile, so give it its own checkpoint.
+- **Pipeline cache identity:** permutation order, and preload of the discard fragment shader. Share the same version bump.
+- **Texture expansion and image-creation spikes** (100–480 ms): delta expansion, skipping the refresh on render-target resize, a bounded image recycle pool.
+- **Push the branch** to `origin`.
+
+**Deprioritized:**
+- filesystem AIO (correlation with FPS is −0.05),
+- render-pass and barrier churn (ruled out),
+- copy-reuse schemes (rejected twice).
+
+## Test protocol
+
+See `AGENT_HANDOFF.md` §4. Compare CP µs/draw across runs. Noise is about 0.15–0.3 µs, and FPS and slow seconds depend on scene mix.
 
 Visual checks after texture or binding changes:
 - the Utah crest is hidden,
 - other crests are unchanged,
-- controller prompts and portraits are unchanged.
+- controller prompts and portraits are unchanged,
+- no flicker or missing textures.
