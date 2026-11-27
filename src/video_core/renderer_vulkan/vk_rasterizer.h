@@ -166,6 +166,19 @@ private:
         VideoCore::TextureCache::ImageDesc desc;
     };
     std::array<ImageBinding, Shader::NUM_IMAGES> image_bindings;
+
+    /// nhlport (NHLPORT_OPT_TEX_INFO_MEMO): ImageInfo of recently bound T#s. ImageInfo is a pure
+    /// function of the 32-byte T#, desc.is_depth and the console mode, so a byte-equal key gives
+    /// the same result; no invalidation is needed.
+    struct TexInfoMemo {
+        std::array<u64, 4> tsharp{};
+        u32 is_depth{};
+        bool valid{};
+        VideoCore::ImageInfo info{};
+    };
+    static constexpr size_t TEX_INFO_MEMO_ENTRIES = 512;
+    bool tex_info_memo_enabled{};
+    std::vector<TexInfoMemo> tex_info_memo;
     std::array<ImageBinding, AmdGpu::NUM_COLOR_BUFFERS> cb_descs;
     ImageBinding db_desc;
 

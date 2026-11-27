@@ -17,6 +17,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include <cstdlib>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -59,6 +60,22 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
         runtime.FlushBarriers();
         buffer_cache.SubmitPendingArenaBinds(info);
     });
+
+    // nhlport: exact command-thread optimizations under evaluation (PERFORMANCE_ROADMAP.md).
+    const auto opt_on = [](const char* name) {
+        const char* v = std::getenv(name);
+        return v && v[0] == '1';
+    };
+    if (opt_on("NHLPORT_OPT_STREAM_UNTRACKED")) {
+        runtime.SetUntrackedReadBuffer(&buffer_cache.GetStreamBuffer());
+        LOG_INFO(Render_Vulkan, "Stream buffer reads are not barrier-tracked "
+                                "(NHLPORT_OPT_STREAM_UNTRACKED=1)");
+    }
+    if (opt_on("NHLPORT_OPT_TEX_INFO_MEMO")) {
+        tex_info_memo_enabled = true;
+        tex_info_memo.resize(TEX_INFO_MEMO_ENTRIES);
+        LOG_INFO(Render_Vulkan, "T# image info cache enabled (NHLPORT_OPT_TEX_INFO_MEMO=1)");
+    }
 }
 
 Rasterizer::~Rasterizer() = default;
@@ -1393,7 +1410,28 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 
         for (auto i = 0; i < num_bindings; i++) {
             auto& [image_id, desc] = image_bindings[num_images++];
-            std::construct_at(&desc, tsharp, image_desc);
+            if (tex_info_memo_enabled) {
+                std::array<u64, 4> key;
+                static_assert(sizeof(key) == sizeof(tsharp));
+                std::memcpy(key.data(), &tsharp, sizeof(key));
+                const u32 is_depth = image_desc.is_depth ? 1u : 0u;
+                u64 h = key[0] * 0x9E3779B97F4A7C15ULL ^ key[1] ^ (key[2] << 1) ^ (key[3] << 2) ^
+                        is_depth;
+                h ^= h >> 29;
+                auto& memo = tex_info_memo[h & (TEX_INFO_MEMO_ENTRIES - 1)];
+                if (!memo.valid || memo.is_depth != is_depth || memo.tsharp != key) {
+                    memo.tsharp = key;
+                    memo.is_depth = is_depth;
+                    memo.info = VideoCore::ImageInfo{tsharp, image_desc};
+                    memo.valid = true;
+                }
+                desc.info = memo.info;
+                desc.view_info = VideoCore::ImageViewInfo{tsharp, image_desc};
+                desc.type = image_desc.is_written ? VideoCore::TextureCache::BindingType::Storage
+                                                  : VideoCore::TextureCache::BindingType::Texture;
+            } else {
+                std::construct_at(&desc, tsharp, image_desc);
+            }
 
             if (mip_fallback_mode == Shader::MipStorageFallbackMode::ConstantIndex) {
                 ASSERT(num_bindings == 1);

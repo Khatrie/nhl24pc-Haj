@@ -77,8 +77,18 @@ public:
 
     void FlushBarriers();
 
+    /// nhlport (NHLPORT_OPT_STREAM_UNTRACKED): read-only accesses to this buffer are not tracked.
+    /// Only valid for a buffer the GPU never writes where it is read (the stream buffer: draws read
+    /// regions the CPU filled; the only GPU writes are compute LDS regions, which are not tracked
+    /// either and are never read by other work in the same tick).
+    void SetUntrackedReadBuffer(const VideoCore::Buffer* buffer) {
+        untracked_read_buffer = buffer;
+    }
+
 private:
     void MakeCurrent(const VideoCore::Buffer* handle);
+
+    const VideoCore::Buffer* untracked_read_buffer{};
 
 private:
     const Instance& instance;

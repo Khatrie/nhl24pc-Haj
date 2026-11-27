@@ -715,6 +715,10 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
 
 bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,
                                bool check_read_access) {
+    if (handle == untracked_read_buffer && !check_read_access) {
+        // Writes to it are never recorded, so a read-side check can never find one.
+        return false;
+    }
     MakeCurrent(handle);
     bool has_access = resource->write_ranges.Overlaps(offset, offset + size);
     if (check_read_access && !has_access) {
@@ -725,6 +729,12 @@ bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 
 
 void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size,
                            vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access) {
+    if (handle == untracked_read_buffer &&
+        !(src_access & (vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eTransferWrite |
+                        vk::AccessFlagBits2::eMemoryWrite))) {
+        // A read of a region nothing on the GPU writes needs no write-after-read barrier.
+        return;
+    }
     MakeCurrent(handle);
 
     const Interval range = {
