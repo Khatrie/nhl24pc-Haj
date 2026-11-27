@@ -158,7 +158,35 @@ The likely cause is cache-line sharing with counters written by other threads. T
 - **Disk streaming as the main cause.** 327 of 527 frames over 50 ms read no files, and correlation with FPS is −0.05.
 - **Shader compilation as the cause of recurring cinematic slowdowns.** Slow windows average 2.5 ms of compilation per second, and 455 of 477 frames over 50 ms compiled nothing.
 
+## Checkpoint 1 gameplay result (run `checkpoint1 11-27-26`)
+
+Compared with the first five minutes of the baseline, which cover similar content:
+
+| Metric | Baseline | Checkpoint 1 |
+|---|---:|---:|
+| FPS | 56.7 | 55.2 |
+| Draws/s | 41k | 46k |
+| GPU stall ms/s | 28.6 | 38.0 |
+| Readback wait ms/s | 26.8 | 35.8 |
+| Frames > 50 ms per minute | 11.4 | 9.7 |
+
+- The result is neutral within scene variance.
+- GPU stalls are almost entirely buffer readbacks, not the array-blank path.
+- The owner confirmed the Utah crest, controller prompts and texture replacements are unaffected.
+- The driver cache autosave logged 45.9 MB in 46 ms on its worker.
+
+## Other observations
+
+- **One crash to desktop.** Build `091a7bfb` crashed straight to desktop at 106 s, just after a scene switch into a 2112×2112 render target.
+  - There was no crash dump, no log error, and no memory pressure (working set 7.5 GB, VRAM 3.8/7.2 GB).
+  - The driver-cache worker was not running.
+  - It has not recurred in four later runs.
+- **Slow startup warm-up once.** Warm-up took 34.7 s once, against the usual 4.7 s, with the same cache. This is probably the NVIDIA driver cache.
+- **Settings drift (cause fixed).** Run settings drifted (FIFO to Mailbox) because `make_release.ps1` rewrote `config.json`. The script now keeps existing user files.
+- **Comparing runs.** The robust cross-run metric is the median command-thread µs per draw over one-second windows with at least 40k draws. Raw session totals are misleading.
+
 ## Remaining uncertainty
 
-- The per-phase split of the about 10 µs per draw is unmeasured. That is the purpose of the next profiling run.
-- None of this branch's changes has been measured in gameplay yet.
+- Which per-buffer step owns the 5.5 µs of buffer binding. Run 2 (profiling on, build with `84f38682`) answers this.
+- Whether `c6e0fe98` fully removes the counter regression. Run 1 (profiling off) answers this.
+- The cause of the single crash to desktop.

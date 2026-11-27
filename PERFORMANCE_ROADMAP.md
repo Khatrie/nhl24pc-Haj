@@ -1,69 +1,65 @@
 # NHL24 PC performance roadmap
 
-Integration branch: `performance/cinematic-renderer-overhaul`, from `d2d799b7`. Evidence and baseline numbers are in `PERFORMANCE_FINDINGS.md`.
+Integration branch: `performance/cinematic-renderer-overhaul`, from `d2d799b7`. Evidence is in `PERFORMANCE_FINDINGS.md`; the operational state and test protocol are in `AGENT_HANDOFF.md`.
 
-## Checkpoint 1: profiling and low-risk fixes (implemented, awaiting gameplay test)
+## Done
 
-| Change | Files | Default | Toggle |
-|---|---|---|---|
-| Per-draw phase CPU timers and real render-pass begin counter | `diag_log.*`, `vk_rasterizer.cpp`, `vk_scheduler.cpp` | Timers off, counter on | `NHLPORT_DIAG_DRAW_PHASES=1` |
-| Array-blank crest check caches layer hashes by guest content, so repeat refreshes skip the GPU download and `Finish()`; zero buffer allocated only when blanking | `texture_cache.*`, `core/memory.*` | On | none (blanking decisions unchanged) |
-| Pipeline cache IO thread: atomic request counter, queue drained on shutdown | `cache_storage.cpp` | On | none |
-| Driver pipeline cache saved on a worker 10 s after the last runtime compile, and at shutdown | `vk_pipeline_cache.*`, `vk_rasterizer.cpp` | On | `NHLPORT_DRIVER_CACHE_AUTOSAVE=0` |
-| Session analysis: sustained clusters, workload correlation, phase breakdown, build comparison | `tools/perf_report.py` | n/a | n/a |
+| Change | Default / toggle | Result |
+|---|---|---|
+| Session analysis tool `tools/perf_report.py` | n/a | In use for every run |
+| Per-draw phase timers, binding sub-phases, per-buffer steps | `NHLPORT_DIAG_DRAW_PHASES=1` (launch with `tools\run_draw_phase_profile.cmd`) | Attributed about 11.4 µs/draw on the command thread |
+| `vk_rendering_begins` counter | Always on | Render-pass churn ruled out (0.09 begins per draw) |
+| Array-blank crest check content cache | On | Crest still hidden; no FPS change (it was not the bottleneck) |
+| Pipeline cache IO thread drain and atomic counter | On | Correctness fix |
+| Driver `.vkcache` autosave after runtime compiles | On; `NHLPORT_DRIVER_CACHE_AUTOSAVE=0` disables | Works, about 46 ms on a worker |
+| `make_release.ps1` keeps user settings | `-ResetUserConfig` writes the template | Not yet exercised |
+| Profiling counters isolated and gated (`c6e0fe98`) | n/a | Removes a regression of about 2 µs/draw; needs verification run 1 |
 
-Verification so far:
-- Clang 18 syntax-only compilation of every changed translation unit (Linux).
-- Independent code review.
-- Not yet built on Windows, run in game, or benchmarked.
+Rejected: reuse of identical stream-buffer copies. 70% of bytes were reusable, but there was no reduction in binding cost; reverted.
 
-## Next phases, in evidence order
+## Pending gameplay tests
 
-1. **Render-pass churn (Phase 2).** Use `vk_rendering_begins` per draw from the checkpoint run.
-   - If the ratio is high, track read and write stages separately in `AccessBuffer`.
-   - Flush render-target barriers only when they are pending.
-   - Merge the feedback-loop access masks.
-   - Validate with the synchronization validation layers.
-2. **Per-stage specialization cache (Phase 2).** Applies if the `pipeline` phase dominates.
-   - Key: program address, binary hash, flattened user data, runtime info, start bindings.
+1. **Run 1, profiling off:** confirms the command thread is back to about 11.4 µs per draw on the current build.
+2. **Run 2, profiling on:** provides the per-buffer step breakdown, which selects item 1 below.
+
+## Next work, in evidence order (slow-window µs per draw)
+
+1. **Buffer binding (5.5 µs, about 12 buffers per draw).** Target the step that run 2 identifies:
+   - **Stream path:** small read-only buffers are re-copied every draw. Reduce fixed per-buffer overhead in `BufferCache::ObtainBuffer`:
+     - one region check per contiguous range,
+     - a single stream `Map` per stage for all small buffers,
+     - avoid repeated alignment and watch bookkeeping.
+   - **Cached path:** skip `SynchronizeMemory` work for ranges with no CPU-modified pages. Check this cheaply first.
+   - **GPU invalidate:** skip `InvalidateMemoryFromGPU` for ranges with no registered images, or ranges already invalidated in the same tick.
+   - **Sharp reads:** cache V# reads per stage when the flattened user data is unchanged.
+2. **Pipeline lookup (1.6 µs).**
+   - Per-stage specialization cache keyed on program address, binary hash, flattened user data contents, runtime info and start bindings.
    - Plus a last-key fast path.
-   - Invalidate on new permutations, shader replacement, and code changes.
-3. **Texture and target binding caches (Phase 2).** Applies if `resources`/`targets` dominate.
-   - Key: raw T#/S# and color/depth register snapshots.
-   - Validated by a texture-cache generation counter and image flags.
-4. **Redundant command emission (Phase 2).**
-   - Skip unchanged vertex input, vertex/index binds, push constants and push descriptors within a command buffer.
-5. **Readbacks (Phase 5).**
-   - Invalidate `ReadFile` targets after the read, with the real byte count.
-   - Skip downloads for pages that are fully overwritten (avplayer, mprotect without write loss).
-   - Flush early for windows with repeated readbacks.
-6. **Expansion (Phase 3).**
+   - Invalidate on new permutations, shader replacement and code changes.
+3. **Texture lookup and views (2.1 µs).**
+   - T#/S#-keyed binding cache, validated by a texture-cache generation counter and image flags (`needs_rebind`, dirty bits).
+4. **Descriptor push (1.2 µs).** Skip pushes whose layout and payload match the previous draw in the same command buffer.
+5. **Cleanup and recording (1.5 µs).**
+   - `ResetBindings` access tracking.
+   - Avoid per-draw mutex and `DebugState` shared-lock checks in `liverpool.cpp`.
+6. **Readbacks (26–36 ms/s of GPU wait).**
+   - Post-read invalidation for `ReadFile`.
+   - Discard downloads for fully overwritten pages.
+   - Earlier flush for windows with repeated readbacks.
+7. **Texture expansion and image creation (spikes of 100–480 ms).**
    - Delta expansion: GPU-copy the old mips and upload only the new ones.
-   - Skip the refresh when a render target resizes and its GPU data is copied anyway.
-   - Then try full-capacity allocation once a growth chain is confirmed within guest mapping bounds.
-7. **Image recycle pool (Phase 3).**
-   - Bounded, keyed on the full create info, released only after GPU completion.
-8. **Override caches (Phase 6).** Content caches for the portrait and main-pack overrides.
-9. **Pipeline identity (Phase 7).**
-   - Content-hash permutation identity.
-   - Serialize the discard fragment shader and preload with the matching runtime info.
-   - Normalize dynamic-state key fields.
-   - Needs one cache version bump, which forces one full recompile.
-10. **Parallel resource preparation and async pipelines (Phases 4, 7, 10).** Start only after 1–8 are measured.
+   - Skip the refresh on render-target resize.
+   - Bounded image recycle pool.
+8. **Pipeline cache identity.** Content-hash permutation identity, plus serializing the discard fragment shader. Needs one cache version bump.
+9. **Parallel draw preparation and async pipelines.** Only after 1–5 are measured.
 
-Filesystem AIO (Phase 9) stays deprioritized: correlation with FPS is −0.05.
+Deprioritized: filesystem AIO (correlation with FPS is −0.05) and render-pass/barrier churn (ruled out).
 
-## Required gameplay test (checkpoint 1)
+## Gameplay test protocol
 
-Build with `tools/build_nhlport.ps1`, stage with `tools/make_release.ps1`, then run with `NHLPORT_DIAG=1 NHLPORT_DIAG_DRAW_PHASES=1`:
-- Be a Pro: arena load, anthem, opening faceoff.
-- Several minutes of play with two or more goals and replays.
-- An intermission.
-- Press F1 (timing only) at the start of each cinematic.
+See `AGENT_HANDOFF.md` §4. Use the same settings every run (FIFO, 1080p windowed, RCAS on). Launch through the profiling script when phase data is needed. Archive every run, and compare µs per draw rather than raw totals.
 
-Then run `python tools/perf_report.py release/user/log --compare <baseline log dir>`.
-
-Visual checks:
-- Utah jerseys still hide the Coyotes crest and shoulder patches.
-- Other teams' crests are unchanged.
-- Controller prompts and portraits are unchanged.
+Visual checks after texture or binding changes:
+- the Utah crest is hidden,
+- other crests are unchanged,
+- controller prompts and portraits are unchanged.
