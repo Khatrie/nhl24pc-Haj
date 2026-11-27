@@ -147,11 +147,6 @@ struct StreamBuffer : public Buffer {
         return last_tick;
     }
 
-    /// Incremented whenever the ring wraps and earlier regions may be overwritten.
-    [[nodiscard]] u64 Generation() const noexcept {
-        return generation;
-    }
-
     /// Maps and commits a memory region with user provided data
     u64 Copy(auto src, size_t size, size_t alignment = 0) {
         const auto [data, offset] = Map(size, alignment);
@@ -186,7 +181,6 @@ private:
     u64 offset{};
     u64 mapped_size{};
     u64 last_tick{};
-    u64 generation{};
     std::vector<Watch> current_watches;
     std::size_t current_watch_cursor{};
     std::optional<size_t> invalidation_mark;

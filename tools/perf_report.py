@@ -56,7 +56,7 @@ DRAW_PHASES = ["filter", "pipeline", "targets", "resources", "render_state", "ve
 BIND_PHASES = ["buffers", "texture_lookup", "texture_views", "samplers"]
 WINDOW_SUMS += [f"draw_{p}_cpu_ms" for p in DRAW_PHASES] + ["dispatch_cpu_ms"]
 WINDOW_SUMS += [f"bind_{p}_cpu_ms" for p in BIND_PHASES]
-WINDOW_SUMS += ["bound_buffers", "bound_textures", "stream_copy_kb", "stream_reuse_kb"]
+WINDOW_SUMS += ["bound_buffers", "bound_textures", "stream_copy_kb"]
 
 
 def fnum(value):
@@ -408,9 +408,7 @@ def report(name, frames, windows, threads, top):
                     L.append(f"\n- {label}: {sum(w['bound_buffers'] for w in ws) / d:.1f} buffers and"
                              f" {sum(w['bound_textures'] for w in ws) / d:.1f} textures per draw/dispatch,"
                              f" {sum(w['stream_copy_kb'] for w in ws) / len(ws) / 1024:.0f} MiB/s copied"
-                             " into the stream buffer,"
-                             f" {sum(w['stream_reuse_kb'] for w in ws) / len(ws) / 1024:.0f} MiB/s reused"
-                             " (NHLPORT_STREAM_DEDUP=1)")
+                             " into the stream buffer")
         for label, ws in (("ok", ok), ("slow", slow)):
             if ws:
                 disp = sum(w["dispatch_cpu_ms"] for w in ws) / len(ws)
