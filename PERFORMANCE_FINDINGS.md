@@ -167,6 +167,14 @@ The likely cause is cache-line sharing with counters written by other threads. T
 
 ## Rejected or deprioritized hypotheses
 
+- **Reusing stream-buffer copies inside a submission, without hashing (`NHLPORT_STREAM_REUSE`, `30fd8026`, reverted).**
+  - Run `20261127-161744`: only 8–11% of small read-only binds were reused.
+  - Most repeats are separated by a packet that ends the window (any non-register, non-draw packet, or a CP coroutine switch). The earlier 70% figure counted repeats anywhere in a tick.
+  - CP cost was 14.19 µs/draw against 11.54 (run `20261127-154844`). Average FPS fell from 57.6 to 53.0.
+  - The likely overhead is the always-on epoch increment on every packet and guest-memory write, plus the 48 KB lookup table. A single run cannot rule out noise, but the ceiling at a 10% hit rate is about 0.3 µs/draw.
+  - **Unsound as designed.** Guest CPU threads write memory directly, with no hook, so the epoch cannot prove that memory was unchanged between two draws.
+  - Do not retry reuse keyed on command-stream position. It needs write tracking on guest pages, and per-bind lookups then cost as much as the copy.
+
 - **Reusing identical stream-buffer copies within a submission (`NHLPORT_STREAM_DEDUP`, removed).**
   - 70% of the bytes were reusable.
   - Binding cost was unchanged: 7.3 µs per draw with reuse, 7.7 µs without.

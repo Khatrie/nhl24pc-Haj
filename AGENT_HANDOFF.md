@@ -80,27 +80,8 @@ All numbers come from real owner sessions; nothing is estimated. Details are in 
   - Most likely cause: cache misses on the per-buffer metadata (tracker, page table, source line, ring), not the copy itself.
   - This is why the earlier hash-based reuse saved nothing: it still read the guest memory.
 
-1. **New experiment, `NHLPORT_STREAM_REUSE=1`** (commit below; off by default):
-   - **Behaviour:** a small read-only buffer bound again with the same address and size, in the same submission tick and ring generation, reuses the earlier stream copy. It skips the GPU-modified check, the copy and `Map`/`Commit`.
-   - **Safety:** no hashing. A global epoch (`video_core/buffer_cache/stream_reuse.h`) ends the reuse window on:
-     - `TryWriteBacking` (CP `WRITE_DATA`, readbacks, image downloads),
-     - `BufferCache::ReadMemory`,
-     - writable binds,
-     - DMA shaders,
-     - map/unmap,
-     - every graphics packet except register sets, draws and debug or sharp NOPs,
-     - every CE and compute packet,
-     - every CP coroutine resume,
-     - each new submission.
-   - **Hit rate:** appears as `stream reuse:` lines in the diag-log summaries.
-2. **Owner test:**
-   - Rebuild.
-   - Play the usual sequence through `tools\run_stream_reuse.cmd` (profiling off).
-   - Watch for any graphical difference: flicker, wrong colours, stale animation or bones, UI.
-   - Then run `python tools/perf_report.py release/user/log --trend`.
-   - Compare CP µs/draw against `20261127-154844` (11.54).
-   - **Keep it** if µs/draw drops measurably and nothing looks wrong. Then make it the default (`NHLPORT_STREAM_REUSE=0` would disable it).
-   - **If visuals break**, find which reset point is missing before going further.
+1. **Stream-copy reuse (`30fd8026`): rejected and reverted.** See `PERFORMANCE_FINDINGS.md`. Only 10% of binds reused, the run was 14.19 vs 11.54 µs/draw, and the scheme is unsound against direct guest CPU writes.
+2. **Measurement note:** there is one profiling-off run per build so far, so run-to-run variance is not established. Do not credit or blame a change for less than about 1 µs/draw until two runs of the same build bound the noise.
 3. **Then the next phases by size:** pipeline lookup (1.7 µs; per-stage specialization cache), descriptor push (1.2 µs; skip unchanged pushes), texture lookup and views (2.1 µs; T#-keyed cache), and `obtain_cached` (1.7 µs).
 
 ## 4. Testing protocol

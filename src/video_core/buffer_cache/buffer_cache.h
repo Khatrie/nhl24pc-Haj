@@ -12,7 +12,6 @@
 #include "video_core/buffer_cache/fault_manager.h"
 #include <absl/container/flat_hash_map.h>
 #include "video_core/buffer_cache/range_set.h"
-#include "video_core/buffer_cache/stream_reuse.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
 namespace AmdGpu {
@@ -161,21 +160,6 @@ private:
     static constexpr u64 WRITE_TICK_WINDOW_BITS = 19;
     absl::flat_hash_map<u64, u64> gpu_write_ticks;
     void NoteGpuWrite(VAddr device_addr, u64 size);
-
-    /// nhlport: stream-buffer copy reuse (NHLPORT_STREAM_REUSE=1). A small read-only buffer
-    /// bound again with the same address and size, in the same submission tick, ring
-    /// generation and reuse epoch, points at the copy made earlier instead of copying again.
-    struct StreamReuseEntry {
-        VAddr address{};
-        u64 offset{};
-        u64 tick{};
-        u64 generation{};
-        u64 epoch{};
-        u32 size{};
-    };
-    static constexpr size_t STREAM_REUSE_ENTRIES = 1024;
-    bool stream_reuse{};
-    std::vector<StreamReuseEntry> stream_reuse_cache;
     Vulkan::Semaphore transfer_semaphore;
     vk::UniqueCommandPool transfer_pool;
     vk::CommandBuffer transfer_cmdbuf;

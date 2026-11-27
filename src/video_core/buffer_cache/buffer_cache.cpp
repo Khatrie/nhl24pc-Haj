@@ -61,11 +61,6 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
       stream_buffer{instance, scheduler, MemoryType::Stream, STREAM_BUFFER_SIZE},
       gds_buffer{instance, 0, GDS_BUFFER_SIZE, MemoryType::Stream, "GDS Buffer"},
       transfer_semaphore{instance}, memory_semaphore{instance} {
-    if (const char* env = std::getenv("NHLPORT_STREAM_REUSE"); env && env[0] == '1') {
-        stream_reuse = true;
-        stream_reuse_cache.resize(STREAM_REUSE_ENTRIES);
-        LOG_INFO(Render_Vulkan, "Stream buffer copy reuse enabled (NHLPORT_STREAM_REUSE=1)");
-    }
     // nhlport: readback copies on a second queue (NHLPORT_READBACK_DRAIN=1 restores Finish()).
     {
         const char* env = std::getenv("NHLPORT_READBACK_DRAIN");
@@ -144,7 +139,6 @@ void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_lock
 }
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool assume_locks) {
-    BreakStreamReuse();
     // nhlport: which guest regions force GPU->CPU readbacks (first 40, then every 1000th)
     {
         static std::atomic<u64> count{0};
@@ -404,48 +398,12 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                                                         bool is_texel_buffer,
                                                         ImageBufferTiming* timing) {
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
-    if (!is_written && size <= STREAM_THRESHOLD) {
-        StreamReuseEntry* entry = nullptr;
-        u64 epoch = 0;
-        u64 tick = 0;
-        if (stream_reuse) {
-            // The epoch changes whenever guest memory or GPU-modified state may have changed
-            // since the earlier copy (see stream_reuse.h), so a hit needs neither the contents
-            // nor the GPU-modified check again. The tick keeps a reused region inside the
-            // submission that wrote it, which the ring's per-tick watches protect.
-            epoch = g_stream_reuse_epoch.load(std::memory_order_relaxed);
-            tick = scheduler.CurrentTick();
-            const u64 slot = ((device_addr >> 4) ^ (device_addr >> 14) ^ (u64{size} << 7)) &
-                             (STREAM_REUSE_ENTRIES - 1);
-            entry = &stream_reuse_cache[slot];
-            if (entry->address == device_addr && entry->size == size && entry->epoch == epoch &&
-                entry->tick == tick && entry->generation == stream_buffer.Generation()) {
-                g_stream_reuse_hits.fetch_add(1, std::memory_order_relaxed);
-                g_stream_reuse_bytes.fetch_add(size, std::memory_order_relaxed);
-                return {&stream_buffer, entry->offset};
-            }
-        }
-        if (!IsRegionGpuModified(device_addr, size)) {
-            const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
-            memory->CopySparseMemory(device_addr, data, size);
-            stream_buffer.Commit();
-            Diag::CountProfile(Diag::C::draw_profile.stream_copy_bytes, size);
-            if (entry) {
-                g_stream_copies.fetch_add(1, std::memory_order_relaxed);
-                g_stream_copy_bytes.fetch_add(size, std::memory_order_relaxed);
-                *entry = {.address = device_addr,
-                          .offset = offset,
-                          .tick = tick,
-                          .generation = stream_buffer.Generation(),
-                          .epoch = epoch,
-                          .size = size};
-            }
-            return {&stream_buffer, offset};
-        }
-    }
-    if (is_written) {
-        // A writable binding sets GPU-modified state and lets shaders change guest buffers.
-        BreakStreamReuse();
+    if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+        const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
+        memory->CopySparseMemory(device_addr, data, size);
+        stream_buffer.Commit();
+        Diag::CountProfile(Diag::C::draw_profile.stream_copy_bytes, size);
+        return {&stream_buffer, offset};
     }
     const u64 first_block = device_addr >> block_shift;
     const u64 last_block = (device_addr + size - 1) >> block_shift;
@@ -497,7 +455,6 @@ bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
 }
 
 void BufferCache::SynchronizeDmaBuffers() {
-    BreakStreamReuse();
     fault_process_pending = true;
     for (const auto& range : resident_ranges) {
         const u64 page = range.start >> (ARENA_PAGE_BITS - block_shift);

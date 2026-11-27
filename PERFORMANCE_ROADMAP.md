@@ -16,11 +16,10 @@ Integration branch: `performance/cinematic-renderer-overhaul`, from `d2d799b7`. 
 | `make_release.ps1` keeps user settings | `-ResetUserConfig` writes the template | Not yet exercised |
 | Profiling counters isolated and gated (`c6e0fe98`) | n/a | Removes a regression of about 2 µs/draw; needs verification run 1 |
 
-Rejected: reuse of identical stream-buffer copies. 70% of bytes were reusable, but there was no reduction in binding cost; reverted.
+Rejected: in-submission stream-copy reuse without hashing (`30fd8026`): 10% hit rate, 14.19 vs 11.54 µs/draw, and unsound against direct guest CPU writes; reverted. Also rejected: reuse of identical stream-buffer copies. 70% of bytes were reusable, but there was no reduction in binding cost; reverted.
 
 ## Pending gameplay tests
 
-0. **Stream copy reuse (`tools\run_stream_reuse.cmd`, `NHLPORT_STREAM_REUSE=1`):** compare CP µs/draw with run `20261127-154844` (11.54), and check visuals. Stream binding is 0.39 µs fixed plus 0.071 µs/KiB per buffer, at about 6 per draw.
 
 1. **Run 1, profiling off:** confirms the command thread is back to about 11.4 µs per draw on the current build.
 2. **Run 2, profiling on:** provides the per-buffer step breakdown, which selects item 1 below.
