@@ -1254,6 +1254,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
     Diag::CountProfile(Diag::C::draw_profile.bound_buffers, stage.buffers.size());
     const u64 alignment = instance.StorageMinAlignment();
     for (const auto& desc : stage.buffers) {
+        Diag::BufferStepTimer steps;
         const auto src_access =
             vk::AccessFlagBits2::eShaderRead |
             (desc.is_written ? vk::AccessFlagBits2::eShaderWrite : vk::AccessFlagBits2::eNone);
@@ -1306,6 +1307,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             } else {
                 UNREACHABLE_MSG("Unexpected buffer type {}", u32(desc.buffer_type));
             }
+            steps.Lap(Diag::BufferStep::Special);
         } else {
             const auto vsharp = desc.GetSharp(stage);
             if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
@@ -1316,8 +1318,16 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                     LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}",
                               vsharp.GetSize(), size, stage.pgm_hash);
                 }
+                steps.Lap(Diag::BufferStep::Sharp);
                 const auto [buffer, offset] = buffer_cache.ObtainBuffer(
                     vsharp.base_address, size, desc.is_written, desc.is_formatted);
+                if (buffer == &buffer_cache.GetStreamBuffer()) {
+                    steps.Lap(Diag::BufferStep::ObtainStream);
+                    Diag::CountProfile(Diag::C::draw_profile.stream_buffers, 1);
+                } else {
+                    steps.Lap(Diag::BufferStep::ObtainCached);
+                    Diag::CountProfile(Diag::C::draw_profile.cached_buffers, 1);
+                }
                 const u64 offset_aligned = Common::AlignDown(offset, alignment);
                 const u64 adjust = offset - offset_aligned;
                 if (adjust % 4 != 0) {
@@ -1332,7 +1342,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                     VideoCore::Perf::inval_source = "shader-buffer";
                     texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, size);
                 }
+                steps.Lap(Diag::BufferStep::GpuInvalidate);
                 needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written);
+                steps.Lap(Diag::BufferStep::AccessCheck);
             }
         }
 

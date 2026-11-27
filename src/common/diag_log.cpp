@@ -125,6 +125,8 @@ struct Counters {
     std::array<u64, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns;
     std::array<u64, static_cast<size_t>(BindPhase::Count)> bind_phase_ns;
     u64 bound_buffers, bound_textures, stream_copy_bytes;
+    std::array<u64, static_cast<size_t>(BufferStep::Count)> buffer_step_ns;
+    u64 stream_buffers, cached_buffers;
 };
 
 /// A compute dispatch kind replaced by an emulator fast path (one entry per kind + shader).
@@ -149,6 +151,10 @@ Counters Snapshot() {
     std::array<u64, static_cast<size_t>(DrawPhase::Count)> draw_phase_ns{};
     for (size_t i = 0; i < draw_phase_ns.size(); ++i) {
         draw_phase_ns[i] = ld(C::draw_profile.draw_phase_ns[i]);
+    }
+    std::array<u64, static_cast<size_t>(BufferStep::Count)> buffer_step_ns{};
+    for (size_t i = 0; i < buffer_step_ns.size(); ++i) {
+        buffer_step_ns[i] = ld(C::draw_profile.buffer_step_ns[i]);
     }
     std::array<u64, static_cast<size_t>(BindPhase::Count)> bind_phase_ns{};
     for (size_t i = 0; i < bind_phase_ns.size(); ++i) {
@@ -226,6 +232,9 @@ Counters Snapshot() {
         .bound_buffers = ld(C::draw_profile.bound_buffers),
         .bound_textures = ld(C::draw_profile.bound_textures),
         .stream_copy_bytes = ld(C::draw_profile.stream_copy_bytes),
+        .buffer_step_ns = buffer_step_ns,
+        .stream_buffers = ld(C::draw_profile.stream_buffers),
+        .cached_buffers = ld(C::draw_profile.cached_buffers),
     };
 }
 
@@ -397,7 +406,9 @@ constexpr const char* FramesHeader =
     "draw_vertex_index_cpu_ms,draw_barriers_cpu_ms,draw_descriptors_cpu_ms,"
     "draw_dynamic_state_cpu_ms,draw_record_cpu_ms,draw_reset_cpu_ms,dispatch_cpu_ms,"
     "bind_buffers_cpu_ms,bind_texture_lookup_cpu_ms,bind_texture_views_cpu_ms,"
-    "bind_samplers_cpu_ms,bound_buffers,bound_textures,stream_copy_kb";
+    "bind_samplers_cpu_ms,bound_buffers,bound_textures,stream_copy_kb,buf_special_cpu_ms,"
+    "buf_sharp_cpu_ms,buf_obtain_stream_cpu_ms,buf_obtain_cached_cpu_ms,buf_gpu_inval_cpu_ms,"
+    "buf_access_check_cpu_ms,buf_stream_count,buf_cached_count";
 
 #ifdef _WIN32
 u64 FileTimeTo100ns(const FILETIME& ft) {
@@ -1729,6 +1740,12 @@ void OnFramePresented(double dt_ms, u32 vo_width, u32 vo_height, u32 flip_pendin
         }
         fmt::format_to(std::back_inserter(row), ",{},{},{}", d(&Counters::bound_buffers),
                        d(&Counters::bound_textures), d(&Counters::stream_copy_bytes) >> 10);
+        for (size_t i = 0; i < cur.buffer_step_ns.size(); ++i) {
+            fmt::format_to(std::back_inserter(row), ",{:.3f}",
+                           double(cur.buffer_step_ns[i] - p.buffer_step_ns[i]) / 1e6);
+        }
+        fmt::format_to(std::back_inserter(row), ",{},{}", d(&Counters::stream_buffers),
+                       d(&Counters::cached_buffers));
         row += '\n';
         std::scoped_lock lk{s.frame_mutex};
         s.frames_buf += row;

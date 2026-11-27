@@ -57,6 +57,8 @@ BIND_PHASES = ["buffers", "texture_lookup", "texture_views", "samplers"]
 WINDOW_SUMS += [f"draw_{p}_cpu_ms" for p in DRAW_PHASES] + ["dispatch_cpu_ms"]
 WINDOW_SUMS += [f"bind_{p}_cpu_ms" for p in BIND_PHASES]
 WINDOW_SUMS += ["bound_buffers", "bound_textures", "stream_copy_kb"]
+BUFFER_STEPS = ["special", "sharp", "obtain_stream", "obtain_cached", "gpu_inval", "access_check"]
+WINDOW_SUMS += [f"buf_{p}_cpu_ms" for p in BUFFER_STEPS] + ["buf_stream_count", "buf_cached_count"]
 
 
 def fnum(value):
@@ -409,6 +411,21 @@ def report(name, frames, windows, threads, top):
                              f" {sum(w['bound_textures'] for w in ws) / d:.1f} textures per draw/dispatch,"
                              f" {sum(w['stream_copy_kb'] for w in ws) / len(ws) / 1024:.0f} MiB/s copied"
                              " into the stream buffer")
+        if "buf_sharp_cpu_ms" in COLUMNS and slow:
+            L.append("\nBuffer binding steps (slow windows):\n")
+            L.append("| Step | µs/draw | µs per buffer of that kind |")
+            L.append("|---|---:|---:|")
+            n_stream = sum(w["buf_stream_count"] for w in slow)
+            n_cached = sum(w["buf_cached_count"] for w in slow)
+            n_all = n_stream + n_cached
+            for p in BUFFER_STEPS:
+                key = f"buf_{p}_cpu_ms"
+                n = {"obtain_stream": n_stream, "obtain_cached": n_cached, "special": 0}.get(p, n_all)
+                per = 1000.0 * sum(w[key] for w in slow) / n if n else float("nan")
+                L.append(f"| {p} | {per_draw(slow, key):.2f} | {per:.2f} |")
+            d = sum(w["draws"] + w["dispatches"] for w in slow)
+            if d:
+                L.append(f"\n- {n_stream / d:.1f} stream-copied and {n_cached / d:.1f} cached buffers per draw/dispatch")
         for label, ws in (("ok", ok), ("slow", slow)):
             if ws:
                 disp = sum(w["dispatch_cpu_ms"] for w in ws) / len(ws)

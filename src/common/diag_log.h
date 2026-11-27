@@ -45,6 +45,16 @@ enum class DrawPhase : u32 {
     Count,
 };
 
+enum class BufferStep : u32 {
+    Special,
+    Sharp,
+    ObtainStream,
+    ObtainCached,
+    GpuInvalidate,
+    AccessCheck,
+    Count,
+};
+
 enum class BindPhase : u32 {
     Buffers,
     TextureLookup,
@@ -127,6 +137,9 @@ struct alignas(64) DrawProfile {
     std::atomic<u64> bound_buffers{0};     ///< guest buffers bound to draws and dispatches
     std::atomic<u64> bound_textures{0};    ///< image descriptors bound to draws and dispatches
     std::atomic<u64> stream_copy_bytes{0}; ///< small read-only buffers copied per bind
+    std::array<std::atomic<u64>, static_cast<size_t>(BufferStep::Count)> buffer_step_ns{};
+    std::atomic<u64> stream_buffers{0}; ///< buffers served by a stream buffer copy
+    std::atomic<u64> cached_buffers{0}; ///< buffers served from the buffer cache arenas
 };
 inline DrawProfile draw_profile{};
 } // namespace C
@@ -141,6 +154,33 @@ inline void CountProfile(std::atomic<u64>& counter, u64 value) {
         counter.fetch_add(value, std::memory_order_relaxed);
     }
 }
+
+/// Sequential timer for the steps of binding one buffer; Lap() charges the time since the
+/// previous lap to a step. Does nothing unless profiling.
+class BufferStepTimer {
+    using Clock = std::chrono::steady_clock;
+
+public:
+    BufferStepTimer() : enabled{DrawProfiling()} {
+        if (enabled) {
+            last = Clock::now();
+        }
+    }
+    void Lap(BufferStep step) {
+        if (!enabled) {
+            return;
+        }
+        const auto now = Clock::now();
+        C::draw_profile.buffer_step_ns[static_cast<size_t>(step)].fetch_add(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - last).count(),
+            std::memory_order_relaxed);
+        last = now;
+    }
+
+private:
+    bool enabled;
+    Clock::time_point last{};
+};
 
 /// Charges the lifetime of the scope to one resource-binding sub-phase while draw phases are on.
 class BindPhaseTimer {
