@@ -94,8 +94,8 @@ namespace NhlPort
             { "vsync", new[] { "VSync", "VSync" } },
             { "vsync_desc", new[] { "Synchronizácia s obnovovacou frekvenciou (bez trhania, mierne vyššia odozva).", "Synchronises with the refresh rate (no tearing, slightly more input lag)." } },
             { "redzone", new[] { "Ochrana red zone (Windows)", "Red zone protection (Windows)" } },
-            { "redzone_desc", new[] { "Experimentálna oprava pádu pri načítaní zápasu (chyba 0xc0000005 hneď po výbere tímov). Zapni, ak ti hra takto padá; môže mierne znížiť výkon. Platí od ďalšieho spustenia.",
-                                      "Experimental fix for the crash while a match loads (error 0xc0000005 right after team selection). Turn it on if the game crashes like that; may cost a little performance. Takes effect on the next start." } },
+            { "redzone_desc", new[] { "Chráni hru pred náhodnými pádmi 0xc0000005 (napr. pri načítaní zápasu). Odporúča sa nechať zapnuté. Platí od ďalšieho spustenia.",
+                                      "Protects against random 0xc0000005 crashes (for example while a match loads). Recommended on. Takes effect on the next start." } },
             { "redzone_short", new[] { "Red zone ✓", "Red zone ✓" } },
             { "stretch_to_fill", new[] { "Vyplniť 21:9 ultrawide (bez čiernych pruhov)", "Stretch to fill 21:9 ultrawide (no black bars)" } },
             { "stretch_to_fill_desc", new[] { "Vykreslí hru aj DLSS na celú šírku monitora bez bočných pruhov. Ideálne pre 3440x1440.",
@@ -1337,7 +1337,7 @@ namespace NhlPort
             quickPanel.Controls.Add(stretchQuick);
             quickPanel.Controls.Add(new TransparentLabel { Left = c1, Top = y + 24, Width = cw + 30, Height = 36, Font = Theme.Small, ForeColor = Color.FromArgb(200, 210, 225), Text = Loc.T("stretch_to_fill_desc") });
             redzoneQuick = new CheckBox { Left = c2, Top = y, Width = cw + 30, Height = 24, Font = Theme.Body, ForeColor = Color.White, BackColor = Color.Transparent, Text = Loc.T("redzone"),
-                Checked = ToBool(GeneralValue("redzone_patches", false), false) };
+                Checked = ToBool(GeneralValue("redzone_patches", true), true) };
             quickPanel.Controls.Add(redzoneQuick);
             quickPanel.Controls.Add(new TransparentLabel { Left = c2, Top = y + 24, Width = cw + 30, Height = 36, Font = Theme.Small, ForeColor = Color.FromArgb(200, 210, 225), Text = Loc.T("redzone_desc") });
             redzoneQuick.CheckedChanged += delegate { RefreshSummary(); };
