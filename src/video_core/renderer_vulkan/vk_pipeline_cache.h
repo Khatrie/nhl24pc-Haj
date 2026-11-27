@@ -3,7 +3,10 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <memory>
+#include <thread>
 #include <variant>
 #include <tsl/robin_map.h>
 #include "shader_recompiler/profile.h"
@@ -117,6 +120,10 @@ public:
         return profile;
     }
 
+    /// Saves the driver pipeline cache on a worker once pipelines compiled during play have been
+    /// quiet for a while (NHLPORT_DRIVER_CACHE_AUTOSAVE=0 disables it).
+    void TickDriverCacheSave();
+
 private:
     bool RefreshGraphicsKey();
     bool RefreshGraphicsStages();
@@ -142,6 +149,12 @@ private:
 
 private:
     size_t driver_cache_loaded_size{};
+    bool driver_cache_autosave{true};
+    u32 driver_cache_saved_pipelines{};
+    u32 driver_cache_seen_pipelines{};
+    std::chrono::steady_clock::time_point driver_cache_last_compile{};
+    std::atomic<bool> driver_cache_saving{false};
+    std::jthread driver_cache_saver;
     const Instance& instance;
     Scheduler& scheduler;
     AmdGpu::Liverpool* liverpool;

@@ -13,6 +13,7 @@
 
 #include <miniz.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <future>
@@ -22,7 +23,7 @@
 namespace {
 
 std::mutex submit_mutex{};
-u32 num_requests{};
+std::atomic<u32> num_requests{};
 std::condition_variable_any request_cv{};
 std::queue<std::packaged_task<void()>> req_queue{};
 std::mutex m_request{};
@@ -37,35 +38,33 @@ namespace Storage {
 void ProcessIO(const std::stop_token& stoken) {
     Common::SetCurrentThreadName("shadPS4:PipelineCacheIO");
 
-    while (!stoken.stop_requested()) {
-        {
-            std::unique_lock lk{submit_mutex};
-            Common::CondvarWait(request_cv, lk, stoken, [&] { return num_requests; });
-        }
-
-        if (stoken.stop_requested()) {
-            break;
-        }
-
-        while (num_requests) {
+    const auto drain = [] {
+        while (true) {
             std::packaged_task<void()> request{};
             {
                 std::scoped_lock lock{m_request};
                 if (req_queue.empty()) {
-                    continue;
+                    return;
                 }
                 request = std::move(req_queue.front());
                 req_queue.pop();
             }
-
             if (request.valid()) {
                 request();
-                request.get_future().wait();
             }
-
-            --num_requests;
+            num_requests.fetch_sub(1, std::memory_order_acq_rel);
         }
+    };
+
+    while (!stoken.stop_requested()) {
+        {
+            std::unique_lock lk{submit_mutex};
+            Common::CondvarWait(request_cv, lk, stoken,
+                                [&] { return num_requests.load(std::memory_order_acquire) != 0; });
+        }
+        drain();
     }
+    drain();
 }
 
 constexpr std::string GetBlobFileExtension(BlobType type) {
@@ -156,13 +155,14 @@ bool WriteVector(const BlobType type, std::filesystem::path&& path_, std::vector
                 file.Write(v);
             }
         }};
-        std::scoped_lock lock{m_request};
-        req_queue.emplace(std::move(request));
+        std::scoped_lock lk{submit_mutex};
+        num_requests.fetch_add(1, std::memory_order_acq_rel);
+        {
+            std::scoped_lock lock{m_request};
+            req_queue.emplace(std::move(request));
+        }
+        request_cv.notify_one();
     }
-
-    std::scoped_lock lk{submit_mutex};
-    ++num_requests;
-    request_cv.notify_one();
     return true;
 }
 

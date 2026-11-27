@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include "common/diag_log.h"
@@ -11,6 +12,7 @@
 #include "common/hash.h"
 #include "common/io_file.h"
 #include "common/path_util.h"
+#include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -372,9 +374,46 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
              driver_cache_loaded_size / 1024);
     // Everything the warm-up compiled is in the driver cache now: keep it for the next start.
     SaveDriverCacheFile();
+    if (const char* v = std::getenv("NHLPORT_DRIVER_CACHE_AUTOSAVE"); v && v[0] == '0') {
+        driver_cache_autosave = false;
+    }
 }
 
-PipelineCache::~PipelineCache() = default;
+PipelineCache::~PipelineCache() {
+    if (driver_cache_saver.joinable()) {
+        driver_cache_saver.join();
+    }
+    if (driver_cache_autosave && num_new_pipelines != driver_cache_saved_pipelines) {
+        SaveDriverCacheFile();
+    }
+}
+
+void PipelineCache::TickDriverCacheSave() {
+    constexpr auto QuietPeriod = std::chrono::seconds{10};
+    if (!driver_cache_autosave || num_new_pipelines == driver_cache_saved_pipelines) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (num_new_pipelines != driver_cache_seen_pipelines) {
+        driver_cache_seen_pipelines = num_new_pipelines;
+        driver_cache_last_compile = now;
+        return;
+    }
+    if (now - driver_cache_last_compile < QuietPeriod ||
+        driver_cache_saving.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (driver_cache_saver.joinable()) {
+        driver_cache_saver.join();
+    }
+    driver_cache_saved_pipelines = num_new_pipelines;
+    driver_cache_saving.store(true, std::memory_order_release);
+    driver_cache_saver = std::jthread{[this] {
+        Common::SetCurrentThreadName("shadPS4:DriverCacheSave");
+        SaveDriverCacheFile();
+        driver_cache_saving.store(false, std::memory_order_release);
+    }};
+}
 
 static std::filesystem::path DriverCacheFilePath() {
     return Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
@@ -404,6 +443,7 @@ void PipelineCache::SaveDriverCacheFile() {
     if (!EmulatorSettings.IsPipelineCacheEnabled()) {
         return;
     }
+    const auto save_start = std::chrono::steady_clock::now();
     auto [result, data] = instance.GetDevice().getPipelineCacheData(*pipeline_cache);
     if (result != vk::Result::eSuccess || data.empty() || data.size() == driver_cache_loaded_size) {
         return; // nothing new compiled since the file was loaded
@@ -428,7 +468,10 @@ void PipelineCache::SaveDriverCacheFile() {
         return;
     }
     driver_cache_loaded_size = data.size();
-    LOG_INFO(Render_Vulkan, "Saved the driver pipeline cache ({} KB)", data.size() / 1024);
+    LOG_INFO(Render_Vulkan, "Saved the driver pipeline cache ({} KB, {} ms)", data.size() / 1024,
+             std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - save_start)
+                 .count());
 }
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params) {
