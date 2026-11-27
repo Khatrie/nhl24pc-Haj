@@ -3,11 +3,14 @@
 #   launcher pictures, the Visual C++ runtime DLLs the exe imports, a clean user\ template
 #   (config, keyboard/controller mapping, NHL 24 memory patches) and a short README.
 # No game data, saves, shader cache, logs or profile data are copied.
+# An existing user\config.json and user\input_config\*.ini are kept, so settings and controls survive
+# a rebuild; pass -ResetUserConfig to replace them with the clean template for a distributable package.
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\make_release.ps1 [-Build ..\build] [-Out ..\release]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\make_release.ps1 [-Build ..\build] [-Out ..\release] [-ResetUserConfig]
 param(
     [string]$Build = (Join-Path $PSScriptRoot '..\build'),
-    [string]$Out = (Join-Path $PSScriptRoot '..\release')
+    [string]$Out = (Join-Path $PSScriptRoot '..\release'),
+    [switch]$ResetUserConfig
 )
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..')
@@ -48,15 +51,27 @@ Copy-Item -Force (Join-Path $fontHelper 'nhl24-font-patch.exe'), (Join-Path $fon
 $decoderSourceOut = Join-Path $helperOut 'ooz-source'
 New-Item -ItemType Directory -Force $decoderSourceOut | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $fontHelper 'ooz-source') -File | Copy-Item -Destination $decoderSourceOut -Force
-$cfg = Get-Content (Join-Path $Build 'user\config.json') -Raw | ConvertFrom-Json
-foreach ($section in 'Launcher') { if ($cfg.PSObject.Properties[$section]) { $cfg.PSObject.Properties.Remove($section) } }
-if ($cfg.General) {
-    foreach ($k in 'addon_install_dir', 'font_dir', 'home_dir', 'sys_modules_dir') { if ($null -ne $cfg.General.PSObject.Properties[$k]) { $cfg.General.$k = '' } }
+$userConfig = Join-Path $user 'config.json'
+if ($ResetUserConfig -or -not (Test-Path $userConfig)) {
+    $cfg = Get-Content (Join-Path $Build 'user\config.json') -Raw | ConvertFrom-Json
+    foreach ($section in 'Launcher') { if ($cfg.PSObject.Properties[$section]) { $cfg.PSObject.Properties.Remove($section) } }
+    if ($cfg.General) {
+        foreach ($k in 'addon_install_dir', 'font_dir', 'home_dir', 'sys_modules_dir') { if ($null -ne $cfg.General.PSObject.Properties[$k]) { $cfg.General.$k = '' } }
+    }
+    if ($cfg.GPU -and $null -ne $cfg.GPU.PSObject.Properties['dump_shaders']) { $cfg.GPU.dump_shaders = $false }
+    if ($cfg.Vulkan -and $null -ne $cfg.Vulkan.PSObject.Properties['gpu_id']) { $cfg.Vulkan.gpu_id = -1 }
+    $cfg | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8 $userConfig
+} else {
+    Write-Host "Keeping existing $userConfig (use -ResetUserConfig to replace it)"
 }
-if ($cfg.GPU -and $null -ne $cfg.GPU.PSObject.Properties['dump_shaders']) { $cfg.GPU.dump_shaders = $false }
-if ($cfg.Vulkan -and $null -ne $cfg.Vulkan.PSObject.Properties['gpu_id']) { $cfg.Vulkan.gpu_id = -1 }
-$cfg | ConvertTo-Json -Depth 20 | Out-File -Encoding utf8 (Join-Path $user 'config.json')
-foreach ($ini in 'default.ini', 'global.ini') { Copy-Item -Force (Join-Path $Build "user\input_config\$ini") (Join-Path $user 'input_config') }
+foreach ($ini in 'default.ini', 'global.ini') {
+    $target = Join-Path $user "input_config\$ini"
+    if ($ResetUserConfig -or -not (Test-Path $target)) {
+        Copy-Item -Force (Join-Path $Build "user\input_config\$ini") $target
+    } else {
+        Write-Host "Keeping existing $target"
+    }
+}
 Copy-Item -Force (Join-Path $repo 'game_patches\nhl24.xml') (Join-Path $user 'patches')
 # readme
 @'
